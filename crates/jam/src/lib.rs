@@ -1,6 +1,65 @@
-//! Maschine JAM over USB (docs/jam-usb.md). So far, what the tools in `examples/` need to
-//! learn the protocol: the device's ids and reports, opening it, and telling what changed
-//! between two reports. The decoder comes when the map is known.
+//! Maschine JAM over USB (docs/jam-usb.md): reports to [`Event`]s, and [`Leds`] to reports.
+//! No threads and no app; `apps/viewer/src/jam_io.rs` runs it. `examples/` has the tools that
+//! learn and check the protocol.
+
+pub mod decode;
+pub mod leds;
+pub mod map;
+
+pub use decode::{Decoder, Event, Touch};
+pub use leds::Leds;
+
+/// An open JAM.
+pub struct Jam {
+    dev: hidapi::HidDevice,
+    decoder: Decoder,
+    /// What the lights last showed: only what changed goes out.
+    shown: Option<Leds>,
+}
+
+impl Jam {
+    /// The JAM's HID interface, opened shared.
+    pub fn open() -> Result<Jam, String> {
+        Ok(Jam { dev: open()?, decoder: Decoder::default(), shown: None })
+    }
+
+    /// What the controller did: waits up to `timeout_ms` for the first report, then takes
+    /// whatever else has come.
+    pub fn poll(&mut self, timeout_ms: i32, out: &mut Vec<Event>) -> Result<(), String> {
+        let mut buf = [0u8; 64];
+        let mut wait = timeout_ms;
+        loop {
+            let n = self.dev.read_timeout(&mut buf, wait).map_err(|e| e.to_string())?;
+            if n == 0 {
+                return Ok(());
+            }
+            self.decoder.decode(&buf[..n], out);
+            wait = 0;
+        }
+    }
+
+    /// Show `leds`: only the reports that differ from what's showing go out.
+    pub fn show(&mut self, leds: &Leds) -> Result<(), String> {
+        let was = self.shown.as_ref();
+        if was.is_none_or(|w| w.buttons != leds.buttons) {
+            self.dev.write(&leds.buttons).map_err(|e| e.to_string())?;
+        }
+        if was.is_none_or(|w| w.pads != leds.pads) {
+            self.dev.write(&leds.pads).map_err(|e| e.to_string())?;
+        }
+        if was.is_none_or(|w| w.strips != leds.strips) {
+            self.dev.write(&leds.strips).map_err(|e| e.to_string())?;
+        }
+        self.shown = Some(leds.clone());
+        Ok(())
+    }
+
+    /// Every light off.
+    pub fn dark(&mut self) -> Result<(), String> {
+        self.shown = None;
+        self.show(&Leds::default())
+    }
+}
 
 /// Native Instruments' USB vendor id.
 pub const VENDOR: u16 = 0x17cc;

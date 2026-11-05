@@ -78,6 +78,9 @@ mod midi_devices;
 mod midi_file;
 mod midi_io;
 mod midi_monitor;
+mod jam_io;
+#[cfg(test)]
+mod jam_tests;
 mod mk3_io;
 mod mod_slots;
 mod modulation;
@@ -232,6 +235,7 @@ fn main() {
                 scale_group: None,
                 user_chords: user_chords::UserChords::load(),
                 mk3: Some(mk3_io::Mk3Io::start()),
+                jam: Some(jam_io::JamIo::start()),
                 _running: Some(keep_running::begin()),
                 ..Default::default()
             };
@@ -842,6 +846,14 @@ pub struct App {
     midi_wired: bool,
     /// The Maschine MK3 over USB (started by `main`, not in tests).
     mk3: Option<mk3_io::Mk3Io>,
+    /// The Maschine JAM over USB (started by `main`, not in tests), and its script while
+    /// it's connected.
+    jam: Option<jam_io::JamIo>,
+    jam_device: Option<deckard_surface::device::Device>,
+    /// The JAM's script wants the Settings page's values (its REC MODE readout).
+    jam_settings_wanted: bool,
+    /// The last JAM script error shown.
+    jam_error: Option<String>,
     /// MIDI controllers run by scripts (the Launchpad Pro); none found in tests.
     midi_devices: midi_devices::MidiDevices,
     /// The last MIDI controller script error shown.
@@ -2130,6 +2142,10 @@ impl App {
     /// switched off), and what sounds set to the Default MIDI source take.
     fn midi_preferences(&mut self, ui: &mut egui::Ui) {
         self.sync_preferences(ui);
+        ui.checkbox(&mut self.settings.jam_enabled, "Maschine JAM").on_hover_text(
+            "DECKARD drives a JAM plugged in over USB. Switch it off when Maschine should have the JAM to itself: with both running, each acts on every press and they overwrite each other's lights.",
+        );
+        ui.separator();
         let (ins, outs) = self.midi_ports().clone();
         for (title, ports, prefix) in [("Inputs", &ins, "in:"), ("Outputs", &outs, "out:")] {
             ui.label(egui::RichText::new(title).strong());
@@ -3998,8 +4014,8 @@ impl App {
             sampling: self.sampling_surface_view(),
             ..Default::default()
         };
-        // (Only while BROWSE shows: the results can be long.)
-        if self.surface.page() == "browse" {
+        // (Only while BROWSE shows, or the JAM has the panel open: the results can be long.)
+        if self.surface.page() == "browse" || (self.jam_device.is_some() && self.browser.open) {
             let b = self.browser.view();
             v.browser = deckard_surface::BrowserView {
                 kind: b.kind,
@@ -4021,6 +4037,10 @@ impl App {
         v.swing = p.swing.amount;
         v.master_volume = p.master_level;
         v.master_db = deckard_model::level_db(p.master_level);
+        v.master_meter = self.master_meter;
+        v.input_meter = self.recorder.view.meter;
+        v.cue_level = p.cue_level;
+        v.scale_root = self.scale.0;
         v.numerator = p.numerator;
         v.denominator = p.denominator;
         v.fixed_velocity = d.num(deckard_doc::Target::Song, "pad_velocity_mode").is_some_and(|m| m as i64 == 1);
@@ -4049,6 +4069,7 @@ impl App {
                 meter,
                 headroom: self.headroom.get(&channel).copied().unwrap_or(0.0),
                 plugins: slots.iter().map(|x| (x.is_instrument(), x.active)).collect(),
+                ..Default::default()
             }
         };
         let meter = |g: usize, s: usize| self.meters.get(g).and_then(|r| r.get(s)).copied().unwrap_or_default();
@@ -4126,10 +4147,20 @@ impl App {
                     muted: grp.muted,
                     default_color: grp.color == deckard_model::Color::Default,
                     playing: self.lit.iter().any(|&(lg, _)| lg == g),
-                    mix: mix(grp.level, grp.pan, loudest, layout::Channel::Group(g), &grp.slots),
+                    mix: deckard_surface::MixView {
+                        aux: grp.aux,
+                        swing: grp.swing.amount,
+                        tune: grp.sounds.iter().find_map(|s| s.sampler.as_ref().map(|x| x.tune)),
+                        ..mix(grp.level, grp.pan, loudest, layout::Channel::Group(g), &grp.slots)
+                    },
                     perform: self.perform_slot(g).map(|i| {
                         let t = || deckard_doc::Target::ChainModule(deckard_doc::Chain::Group(g), i);
                         (d.num(t(), "touchstrip_on_off").unwrap_or(0.0) > 0.5, d.num(t(), "touchstrip_pos").unwrap_or(0.5))
+                    }),
+                    perform_mode: self.perform_slot(g).map(|i| {
+                        let t = deckard_doc::Target::ChainModule(deckard_doc::Chain::Group(g), i);
+                        let mode = (d.num(t, "mode").unwrap_or(0.0).round().max(0.0) as usize).min(7);
+                        (mode, module_ui::PERFORM_MODES[mode].to_string())
                     }),
                     patterns: grp
                         .patterns
@@ -4167,7 +4198,12 @@ impl App {
                                     || snd.channel.midi_out != deckard_model::MidiDest::None
                                     || noted.contains(&s),
                                 playing: self.lit.contains(&(g, s)),
-                                mix: mix(snd.level, snd.pan, meter(g, s), layout::Channel::Sound(g, s), &snd.slots),
+                                mix: deckard_surface::MixView {
+                                    aux: snd.aux,
+                                    swing: snd.swing.amount,
+                                    tune: snd.sampler.as_ref().map(|x| x.tune),
+                                    ..mix(snd.level, snd.pan, meter(g, s), layout::Channel::Sound(g, s), &snd.slots)
+                                },
                                 choke_group: snd.channel.choke_group,
                                 choke_mode: snd.channel.choke_mode,
                                 link_group: snd.channel.link_group,
@@ -4456,13 +4492,97 @@ impl App {
                 }
             }
             A::Repeat("locked", v) => self.arp_locked = v > 0.5,
+            A::Repeat("on", v) => self.repeat_soft = v > 0.5,
             A::Repeat(what, v) => self.arp_edit(&format!("arp/{what}"), v),
+            A::ChokeAll => {
+                if let Some(Ok(out)) = &self.output
+                    && out.has_engine()
+                {
+                    out.live(deckard_engine::Live::ChokeAll);
+                }
+            }
+            A::DeletePattern { group, pattern } => {
+                if project.is_some_and(|p| p.groups.get(group).is_some_and(|grp| pattern < grp.patterns.len())) {
+                    layout::apply_acts(self, vec![Act::DeletePattern(group, pattern)]);
+                }
+            }
+            A::CopyPattern { group, from, to } => {
+                if let Some(doc) = &self.doc
+                    && let Err(e) = doc.borrow_mut().copy_pattern(group, from, to)
+                {
+                    self.status = format!("can't duplicate the pattern: {e}");
+                }
+            }
+            A::DeleteScene(scene) => {
+                if project.is_some_and(|p| p.scenes.len() > 1 && scene < p.scenes.len()) {
+                    layout::apply_acts(self, vec![Act::DeleteScene(scene)]);
+                }
+            }
+            A::CopyScene { from, to } => {
+                if let Some(doc) = &self.doc
+                    && let Err(e) = doc.borrow_mut().copy_scene(from, to)
+                {
+                    self.status = format!("can't duplicate the scene: {e}");
+                }
+            }
+            A::CopyGroup { from, to } => {
+                let Some(p) = project else { return };
+                if from == to || from >= p.groups.len() || to > p.groups.len() {
+                    return;
+                }
+                let mut acts = vec![Act::CopyGroup(from)];
+                if to == p.groups.len() {
+                    acts.push(Act::AddGroup);
+                }
+                acts.push(Act::PasteGroup(to));
+                layout::apply_acts(self, acts);
+            }
+            A::CopySound { from, to } => {
+                let Some(p) = project else { return };
+                let sounds = p.groups.get(g).map_or(0, |grp| grp.sounds.len());
+                if from != to && from < sounds && to < sounds {
+                    layout::apply_acts(self, vec![Act::CopySound(g, from), Act::PasteSound(g, to)]);
+                }
+            }
+            A::SetSend { group, sound, aux, level } => {
+                let t = match sound {
+                    Some(s) => Target::Sound(group, s),
+                    None => Target::GroupStrip(group),
+                };
+                layout::apply_acts(self, vec![Act::SetParam(t, if aux == 0 { "aux1_level" } else { "aux2_level" }, level)]);
+            }
+            A::SetChannelSwing { group, sound, amount } => {
+                let Some(p) = project else { return };
+                let (t, swing) = match (group, sound) {
+                    (Some(gr), Some(s)) => {
+                        let Some(x) = p.groups.get(gr).and_then(|grp| grp.sounds.get(s)) else { return };
+                        (Target::Sound(gr, s), x.swing)
+                    }
+                    (Some(gr), None) => {
+                        let Some(x) = p.groups.get(gr) else { return };
+                        (Target::Group(gr), x.swing)
+                    }
+                    _ => (Target::Song, p.swing),
+                };
+                layout::apply_acts(self, vec![Act::SetSwing(t, deckard_model::Swing { amount, ..swing })]);
+            }
+            A::SetTune { group, sound, semitones } => self.jam_tune(group, sound, semitones),
+            A::CueDb(db) => layout::apply_acts(self, vec![Act::SetParam(Target::Song, "cue_level", deckard_model::level_from_db(db))]),
+            A::Library(on) => {
+                if self.browser.open != on {
+                    self.browse(browser::BrowseAct::Toggle);
+                }
+            }
+            A::ResetKnob(knob) => self.jam_reset_knob(knob),
+            A::PerformMode { group, mode } => self.jam_perform_mode(group, mode),
+            A::SettingsWanted(on) => self.jam_settings_wanted = on,
             A::Lfo(what, pad, v) => self.surface_lfo(what, pad, v),
             A::ModSlot(slot, row, steps) => mod_slots::step(self, slot, row, steps),
             A::ModSlotsClosed => self.mod_draft = None,
             A::Lock(what, n) => match what {
                 "button" => self.lock_button(),
                 "pad" => self.lock_pad(n),
+                "slot" => self.lock_slot(n),
                 "update" => self.lock_update(),
                 "delete" => self.lock_delete(),
                 "delete_slot" => self.lock_delete_slot(n),
@@ -4995,6 +5115,9 @@ impl App {
             self.midi.set_output(out.sender());
             if let Some(m) = &self.mk3 {
                 m.set_output(out.sender());
+            }
+            if let Some(j) = &self.jam {
+                j.set_output(out.sender());
             }
             self.midi_wired = true;
         }
@@ -8352,6 +8475,7 @@ impl App {
             ctx.request_repaint_after(undrawn(ctx, c.interval()));
         }
         self.mk3_sync(ctx, &mut requests, true);
+        self.jam_sync(ctx, true);
         self.handle(requests);
         self.sync_selection();
         self.sync_audio_settings();
@@ -8401,6 +8525,9 @@ impl eframe::App for App {
         self.midi_devices.close_all();
         if let Some(m) = &self.mk3 {
             m.shut_down(goodbye::picture());
+        }
+        if let Some(j) = &self.jam {
+            j.shut_down();
         }
     }
 
@@ -8649,6 +8776,7 @@ impl App {
             }
         }
         self.mk3_sync(ui.ctx(), &mut requests, false);
+        self.jam_sync(ui.ctx(), false);
         self.handle(requests);
         self.sync_selection();
         self.sync_audio_settings();
