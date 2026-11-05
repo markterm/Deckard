@@ -12421,23 +12421,15 @@ mod tests {
     /// modulation and leaves them where they are. Otherwise it moves them.
     #[test]
     fn dragging_a_mixer_fader_writes_with_auto_write_on() {
-        /// The Ideas view shows a group's patterns in their places, with the gaps between, and
-        /// a double-click on a gap or below the last makes a pattern there.
-        #[test]
-        fn the_ideas_view_shows_and_fills_gaps() {
-            let mut app = App { show_controller: false, follow: true, grid: PPQ / 4, prop_set: 1, ..Default::default() };
-            app.new_project();
-            {
-                let mut d = app.doc.as_ref().unwrap().borrow_mut();
-                d.add_pattern(0, 0, "Pattern 1").unwrap();
-                d.assign_pattern(0, 0, Some(0)).unwrap();
-            }
-            (app.group, app.pattern, app.scene, app.sound) = (0, 0, 0, 0);
-            (app.mixer, app.mixer_sounds) = (true, false);
-            d.add_pattern(0, 0, "One").unwrap();
-            d.add_pattern_in_slot(0, 0, 3, "Four").unwrap();
+        let mut app = App { show_controller: false, follow: true, grid: PPQ / 4, prop_set: 1, ..Default::default() };
+        app.new_project();
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.add_pattern(0, 0, "Pattern 1").unwrap();
+            d.assign_pattern(0, 0, Some(0)).unwrap();
         }
-        (app.group, app.pattern, app.scene, app.sound, app.song_view) = (0, 0, 0, 0, false);
+        (app.group, app.pattern, app.scene, app.sound) = (0, 0, 0, 0);
+        (app.mixer, app.mixer_sounds) = (true, false);
         let mut h = Harness::builder()
             .with_size(egui::vec2(1500.0, 930.0))
             .with_step_dt(1.0 / 60.0)
@@ -12480,6 +12472,25 @@ mod tests {
         assert!(points("level") > 0, "the level written");
         assert!(points("pan") > 0, "the pan written");
         assert!(p.groups[0].patterns[0].mods.iter().filter(|m| m.field == "level").all(|m| m.value < 0.0), "down from the fader's place");
+    }
+
+    /// The Ideas view shows a group's patterns in their places, with the gaps between, and
+    /// a double-click on a gap or below the last makes a pattern there.
+    #[test]
+    fn the_ideas_view_shows_and_fills_gaps() {
+        let mut app = App { show_controller: false, follow: true, grid: PPQ / 4, prop_set: 1, ..Default::default() };
+        app.new_project();
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.add_pattern(0, 0, "One").unwrap();
+            d.add_pattern_in_slot(0, 0, 3, "Four").unwrap();
+        }
+        (app.group, app.pattern, app.scene, app.sound, app.song_view) = (0, 0, 0, 0, false);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1500.0, 930.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        h.run_steps(4);
         let place = |h: &Harness<'static, App>, slot: usize| -> egui::Rect {
             h.ctx.data(|d| d.get_temp(layout::header_rect(&format!("pattern place 0 {slot}")))).expect("drawn")
         };
