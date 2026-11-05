@@ -187,7 +187,7 @@ impl Sender {
                     }
                 }
             }
-            Live::ControlIn { .. } | Live::Expression { .. } | Live::RepeatPressure { .. } => {}
+            Live::ControlIn { .. } | Live::Expression { .. } | Live::RepeatPressure { .. } | Live::ChokeAll => {}
         }
     }
 

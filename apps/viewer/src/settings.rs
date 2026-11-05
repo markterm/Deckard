@@ -89,6 +89,8 @@ pub struct Settings {
     pub render_ahead_ms: u32,
     /// The MK3 displays' backlight, 0..=100 (Maschine's Hardware settings > Display).
     pub display_brightness: u8,
+    /// DECKARD drives a Maschine JAM plugged in (Preferences > MIDI).
+    pub jam_enabled: bool,
     /// How hard the MK3's pads have to be pressed, 0..=100 (Preferences > Hardware): 0
     /// takes the pressure as it comes; higher, light presses play louder.
     pub pad_sensitivity: u8,
@@ -291,6 +293,7 @@ impl Default for Settings {
             exact_timing: true,
             render_ahead_ms: 0,
             display_brightness: 100,
+            jam_enabled: true,
             pad_sensitivity: 50,
             metronome_volume: 100,
             metronome_auto: false,
@@ -511,6 +514,7 @@ impl Settings {
                         s.display_brightness = n.min(100);
                     }
                 }
+                "jam_enabled" => s.jam_enabled = v != "false",
                 "render_ahead_ms" => {
                     if let Ok(n) = v.parse::<u32>() {
                         s.render_ahead_ms = n.min(200);
@@ -643,6 +647,7 @@ impl Settings {
             "buffer_frames = {}\nmulticore = {}\nexact_timing = {}\nrender_ahead_ms = {}\ndisplay_brightness = {}\npad_sensitivity = {}\n",
             self.buffer_frames, self.multicore, self.exact_timing, self.render_ahead_ms, self.display_brightness, self.pad_sensitivity
         );
+        out += &format!("jam_enabled = {}\n", self.jam_enabled);
         out += &format!(
             "metronome_volume = {}\nmetronome_auto = {}\nmetronome_ticks = {}\n",
             self.metronome_volume, self.metronome_auto, self.metronome_ticks
