@@ -2160,6 +2160,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deckard-jam"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+]
+
+[[package]]
 name = "deckard-library"
 version = "0.1.0"
 dependencies = [
