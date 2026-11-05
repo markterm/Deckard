@@ -87,6 +87,7 @@ mod mod_slots;
 mod modulation;
 mod module_ui;
 mod ni_agent;
+mod ni_services;
 #[cfg(test)]
 mod pad_blink_tests;
 #[cfg(test)]
@@ -937,6 +938,9 @@ pub struct App {
     stems_offer: Option<StemsOffer>,
     /// Asking to quit NI's agent, which holds the MK3's screens.
     ni_agent: ni_agent::Ask,
+    /// Asking to stop NI's services, which fight DECKARD over a JAM's lights.
+    ni_services_ask: ni_agent::Ask,
+    ni_services: ni_services::Watch,
     /// Windows plug-ins through Wine (Preferences ▸ Plug-ins, Linux): what's installed,
     /// the task running (what it is, where its result comes), the last task's message.
     wine_status: Option<wine::Status>,
@@ -2345,6 +2349,21 @@ impl App {
         ui.checkbox(&mut self.settings.jam_enabled, "Maschine JAM").on_hover_text(
             "DECKARD drives a JAM plugged in over USB. Switch it off when Maschine should have the JAM to itself: with both running, each acts on every press and they overwrite each other's lights.",
         );
+        if ni_services::SUPPORTED {
+            let seen = self.ni_services.seen;
+            ui.horizontal(|ui| {
+                ui.label(if seen.services { "NI's services: running" } else { "NI's services: stopped" }).on_hover_text(
+                    "They light a JAM too, so its pads turn orange and its lights flash while DECKARD drives it. Maschine needs them running.",
+                );
+                if seen.services {
+                    if ui.add_enabled(!seen.maschine, egui::Button::new("Stop")).on_hover_text("Asks for administrator approval. Not while Maschine runs.").clicked() {
+                        ni_services::start_or_stop(false);
+                    }
+                } else if ui.button("Start").on_hover_text("For Maschine. Asks for administrator approval.").clicked() {
+                    ni_services::start_or_stop(true);
+                }
+            });
+        }
         ui.checkbox(&mut self.settings.focus_follows, "Focus the group MIDI is recorded into").on_hover_text(
             "While recording, MIDI going into another group makes it the focused group, and so does picking a pattern on a JAM's Project View. Off: the focus stays where you put it, and the MIDI still records into its group and the pattern still plays.",
         );
@@ -2917,6 +2936,25 @@ impl App {
             self.ni_agent = ni_agent::Ask::Declined;
         }
         ni_agent::dialog(ctx, &mut self.ni_agent, holding, &mut self.status, ni_agent::quit);
+        // A JAM connected with NI's services running: they fight over its lights.
+        if let Some(failure) = ni_services::take_failure() {
+            self.status = failure;
+            self.ni_services_ask = ni_agent::Ask::Declined;
+        }
+        let connected = self.jam_device.is_some();
+        if connected || self.prefs.is_some() {
+            let seen = self.ni_services.look(std::time::Instant::now());
+            let offer = seen.offer(connected);
+            ni_agent::ask_about(
+                "ni-services",
+                &ni_services::WORDS,
+                ctx,
+                &mut self.ni_services_ask,
+                offer,
+                &mut self.status,
+                ni_services::stop,
+            );
+        }
         self.preferences(ctx);
         if self.about.is_some() && !about::show(self, ctx) {
             self.about = None;
@@ -3259,7 +3297,8 @@ impl App {
                     .map(|_| Some((Some(made), None)))
                 }
                 Act::AssignPattern(s, g, p) => d.assign_pattern(s, g, p).map(|_| None),
-                Act::NewPattern(s, g) => {
+                Act::NewPattern(s, g) | Act::NewPatternAt(s, g, _) => {
+                    let slot = if let Act::NewPatternAt(.., slot) = act { Some(slot) } else { None };
                     let n = d.project().groups.get(g).map_or(0, |x| x.patterns.len());
                     // Like the focused pattern (its colour), or the group's first; the
                     // Settings page's LENGTH long.
@@ -3267,7 +3306,10 @@ impl App {
                     let mut made = 0;
                     let length = self.default_pattern_length(d.project());
                     let r = d.transaction("New Pattern", |d| {
-                        made = d.add_pattern(g, from, &format!("Pattern {}", n + 1))?;
+                        made = match slot {
+                            Some(slot) => d.add_pattern_in_slot(g, from, slot, &format!("Pattern {}", slot + 1))?,
+                            None => d.add_pattern(g, from, &format!("Pattern {}", n + 1))?,
+                        };
                         d.set_pattern_length(g, made, length)?;
                         if s < d.project().scenes.len() {
                             d.assign_pattern(s, g, Some(made))?;
@@ -4423,6 +4465,7 @@ impl App {
                             default_color: pt.color == deckard_model::Color::Default,
                             rgb: layout::pattern_rgb(p, g, pt.color),
                             bars: pt.length as f64 / bar,
+                            slot: pt.slot,
                         })
                         .collect(),
                     scene_pattern: p.scenes.get(self.scene).and_then(|sc| sc.patterns.iter().find(|(pg, _)| *pg == g).map(|&(_, pi)| pi)),
@@ -4517,6 +4560,15 @@ impl App {
                 if project.is_some_and(|p| group < p.groups.len()) {
                     let was = (self.group, self.pattern);
                     layout::apply_acts(self, vec![Act::NewPattern(self.scene, group)]);
+                    if group != was.0 {
+                        (self.group, self.pattern) = was;
+                    }
+                }
+            }
+            A::NewPatternAt { group, slot } => {
+                if project.is_some_and(|p| group < p.groups.len()) {
+                    let was = (self.group, self.pattern);
+                    layout::apply_acts(self, vec![Act::NewPatternAt(self.scene, group, slot)]);
                     if group != was.0 {
                         (self.group, self.pattern) = was;
                     }
