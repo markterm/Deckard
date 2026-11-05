@@ -87,6 +87,7 @@ mod mod_slots;
 mod modulation;
 mod module_ui;
 mod ni_agent;
+mod ni_services;
 #[cfg(test)]
 mod pad_blink_tests;
 #[cfg(test)]
@@ -904,6 +905,9 @@ pub struct App {
     stems_offer: Option<StemsOffer>,
     /// Asking to quit NI's agent, which holds the MK3's screens.
     ni_agent: ni_agent::Ask,
+    /// Asking to stop NI's services, which fight DECKARD over a JAM's lights.
+    ni_services_ask: ni_agent::Ask,
+    ni_services: ni_services::Watch,
     /// Windows plug-ins through Wine (Preferences ▸ Plug-ins, Linux): what's installed,
     /// the task running (what it is, where its result comes), the last task's message.
     wine_status: Option<wine::Status>,
@@ -2167,6 +2171,21 @@ impl App {
         ui.checkbox(&mut self.settings.jam_enabled, "Maschine JAM").on_hover_text(
             "DECKARD drives a JAM plugged in over USB. Switch it off when Maschine should have the JAM to itself: with both running, each acts on every press and they overwrite each other's lights.",
         );
+        if ni_services::SUPPORTED {
+            let seen = self.ni_services.seen;
+            ui.horizontal(|ui| {
+                ui.label(if seen.services { "NI's services: running" } else { "NI's services: stopped" }).on_hover_text(
+                    "They light a JAM too, so its pads turn orange and its lights flash while DECKARD drives it. Maschine needs them running.",
+                );
+                if seen.services {
+                    if ui.add_enabled(!seen.maschine, egui::Button::new("Stop")).on_hover_text("Asks for administrator approval. Not while Maschine runs.").clicked() {
+                        ni_services::start_or_stop(false);
+                    }
+                } else if ui.button("Start").on_hover_text("For Maschine. Asks for administrator approval.").clicked() {
+                    ni_services::start_or_stop(true);
+                }
+            });
+        }
         ui.checkbox(&mut self.settings.focus_follows, "Focus the group MIDI is recorded into").on_hover_text(
             "While recording, MIDI going into another group makes it the focused group, and so does picking a pattern on a JAM's Project View. Off: the focus stays where you put it, and the MIDI still records into its group and the pattern still plays.",
         );
@@ -2739,6 +2758,25 @@ impl App {
             self.ni_agent = ni_agent::Ask::Declined;
         }
         ni_agent::dialog(ctx, &mut self.ni_agent, holding, &mut self.status, ni_agent::quit);
+        // A JAM connected with NI's services running: they fight over its lights.
+        if let Some(failure) = ni_services::take_failure() {
+            self.status = failure;
+            self.ni_services_ask = ni_agent::Ask::Declined;
+        }
+        let connected = self.jam_device.is_some();
+        if connected || self.prefs.is_some() {
+            let seen = self.ni_services.look(std::time::Instant::now());
+            let offer = seen.offer(connected);
+            ni_agent::ask_about(
+                "ni-services",
+                &ni_services::WORDS,
+                ctx,
+                &mut self.ni_services_ask,
+                offer,
+                &mut self.status,
+                ni_services::stop,
+            );
+        }
         self.preferences(ctx);
         if self.about.is_some() && !about::show(self, ctx) {
             self.about = None;

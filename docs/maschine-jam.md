@@ -9,6 +9,8 @@ either moves both.
 LED is comes from a third-party driver, checked against the device's descriptor and not yet
 pressed by hand: see "Checking it" below.
 
+**NI's services fight DECKARD over the lights.** With them running, the pads turn orange and the lights flash at every press. So when a JAM connects, DECKARD offers to stop them, which asks for administrator approval. It doesn't offer while Maschine runs. Maschine needs them, so start them again in Preferences ▸ MIDI, or restart Windows.
+
 Preferences ▸ MIDI ▸ **Maschine JAM** switches it off. DECKARD opens the JAM whether or not
 Maschine is running: with both running, each acts on every press and they overwrite each other's
 lights, so switch one off.

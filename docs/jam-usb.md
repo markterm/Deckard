@@ -53,8 +53,14 @@ pressure.
 | 0x82 | 88 | 88 | 8 strips × 11 LEDs |
 | 0xF4 | 3 | 3 | Unknown. Not written. |
 
-The device accepted frames on 0x80, 0x81 and 0x82 with NI's agent running (measured). Nobody
-was watching, so what they light is still to learn.
+The device accepted frames on 0x80, 0x81 and 0x82 with NI's agent running (measured).
+
+**NI's services write these lights too.** With `NIHardwareService` and `NIHostIntegrationAgent`
+running and nothing else using the JAM, a pad tap turned the pads and strips orange at different
+levels, and a strip's lights followed the finger. Stopped, nothing reacted (watched by webcam,
+2026-11-05). It looks like the JAM's MIDI mode, though that isn't proven. With DECKARD running too,
+each overwrites the other, and DECKARD only sends a report when its own lights change, so the
+wrong lights stayed. `apps/viewer/src/ni_services.rs` offers to stop them when a JAM connects.
 
 ## The palette (feature reports 0xF1, 0xF2)
 
