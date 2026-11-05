@@ -45,17 +45,37 @@ fn nks_presets_load_as_their_plugin() {
     let lead = item("Lead.nksf", Kind::Instrument, &nks::fixture(uid(synth), 0, "Synth", b"first"));
     app.load_item(&lead, Some((0, 0))).unwrap();
     assert_eq!(plugins(&app), [("Synth".to_string(), format!("Vendor:VST3:INSTR:{synth}"))]);
+    assert_eq!((app.slot_of, app.slot, app.plugin_page), (Some(deckard_doc::Chain::Sound(0, 0)), Some(0), 0));
+    assert!(app.plugin_view.is_none());
     // An effect goes last, and an instrument takes the instrument's place.
     let hall = item("Hall.nksfx", Kind::Effect, &nks::fixture(uid(effect), 0, "Verb", b"hall"));
     app.load_item(&hall, Some((0, 0))).unwrap();
-    let bass = item("Bass.nksf", Kind::Instrument, &nks::fixture(uid(synth), 0, "Synth", b"second"));
+    assert_eq!(app.slot, Some(1));
+    let nica = vec![
+        vec![
+            nks::Knob { id: Some(0), name: "Spread".into(), section: "Performance".into() },
+            nks::Knob { id: Some(1), name: "Cutoff".into(), section: String::new() },
+        ],
+        vec![
+            nks::Knob { id: Some(10), name: "Drive".into(), section: "Filter 1".into() },
+            nks::Knob { id: Some(11), name: "Reso".into(), section: "Filter 2".into() },
+        ],
+    ];
+    let bass = item("Bass.nksf", Kind::Instrument, &nks::fixture_with_pages(uid(synth), 0, "Synth", b"second", &nica));
     app.load_item(&bass, Some((0, 0))).unwrap();
     assert_eq!(plugins(&app).iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), ["Synth", "Verb"]);
     {
         let doc = app.doc.clone().unwrap();
         let d = doc.borrow();
-        let chunk = &d.project().groups[0].sounds[0].slots[0].plugin.as_ref().unwrap().chunk;
-        assert!(chunk.windows(6).any(|w| w == b"second"), "the second preset's state");
+        let pr = d.project().groups[0].sounds[0].slots[0].plugin.as_ref().unwrap();
+        assert!(pr.chunk.windows(6).any(|w| w == b"second"), "the second preset's state");
+        assert_eq!(pr.pages.len(), 2, "NICA pages saved with the plug-in");
+        assert_eq!(
+            (pr.pages[0].params[0].id, pr.pages[0].params[0].name.as_str(), pr.pages[0].params[0].section.as_str()),
+            (0, "Spread", "Performance")
+        );
+        assert_eq!(crate::saved_page_name(&pr.pages[0]), "Performance");
+        assert_eq!(crate::saved_page_name(&pr.pages[1]), "Filter 1 / Filter 2");
     }
 
     // What can't load says why, and changes nothing.
