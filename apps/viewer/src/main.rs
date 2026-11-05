@@ -1525,6 +1525,7 @@ impl App {
             return;
         }
         let path = d.path().map(Path::to_path_buf);
+        self.remember_libraries();
         if let Some(sample) = self.samples.sample(&z.sample, path.as_deref()) {
             self.waveform = Some(sampler_ui::Waveform::new(key, &sample.frames, sample.rate));
         }
@@ -2395,6 +2396,25 @@ impl App {
                     ui.label("");
                     ui.label(egui::RichText::new("How hard the MK3's pads must be pressed: higher, gentle presses play louder.").weak());
                     ui.end_row();
+                    if cfg!(windows)
+                        && let Some(mk3) = &self.mk3
+                    {
+                        ui.label("Controller screens");
+                        if mk3.displays_released() {
+                            if ui.button("Use in DECKARD").clicked() {
+                                mk3.release_displays(false);
+                            }
+                        } else if mk3.displays_connected() {
+                            if ui.button("Give Back to NI's Driver").on_hover_text("For Maschine and NI's other software, which can't use the screens while DECKARD's driver has them. Asks for administrator approval.").clicked() {
+                                mk3.release_displays(true);
+                                ni_agent::give_back();
+                                self.status = "giving the controller's screens back to NI's driver".into();
+                            }
+                        } else {
+                            ui.label(egui::RichText::new("Not open").weak());
+                        }
+                        ui.end_row();
+                    }
                     ui.label("Controller");
                     use settings::ControllerChoice as C;
                     let mut choice = self.settings.controller;
@@ -2690,6 +2710,10 @@ impl App {
         }
         self.stems_offer_dialog(ctx);
         let holding = self.mk3.as_ref().is_some_and(mk3_io::Mk3Io::agent_holding);
+        if let Some(failure) = ni_agent::take_failure() {
+            self.status = failure;
+            self.ni_agent = ni_agent::Ask::Declined;
+        }
         ni_agent::dialog(ctx, &mut self.ni_agent, holding, &mut self.status, ni_agent::quit);
         self.preferences(ctx);
         if self.about.is_some() && !about::show(self, ctx) {
@@ -2715,6 +2739,7 @@ impl App {
         self.headroom.clear();
         let d = doc.borrow();
         let project = d.project();
+        self.remember_libraries();
         let out = match self.output.get_or_insert_with(|| open_output(&self.settings, &mut self.output_fallback)) {
             Ok(out) => out,
             Err(e) => {
@@ -2752,6 +2777,9 @@ impl App {
         }
         if !report.no_sampler.is_empty() {
             status += &format!("; not played (drum synths aren't rendered yet): {}", report.no_sampler.join(", "));
+        }
+        if !report.missing.is_empty() {
+            status += &format!("; {} samples not found", report.missing.len());
         }
         self.status = status;
     }
@@ -4063,6 +4091,17 @@ impl App {
             v.scene_color = layout::scene_index(p, self.scene);
         }
         let mix = |level: f64, pan: f64, meter: (f32, f32), channel: layout::Channel, slots: &[deckard_model::SlotInfo]| {
+            // While modulation is written, where it has the fader: a turn goes on from there.
+            let t = match channel {
+                layout::Channel::Sound(g, s) => Some(deckard_doc::Target::Sound(g, s)),
+                layout::Channel::Group(g) => Some(deckard_doc::Target::GroupStrip(g)),
+                _ => None,
+            };
+            let written = |edit: fn(deckard_doc::Target) -> layout::Edit| {
+                t.map(edit).filter(|e| layout::knob_drag_writes(self, *e)).and_then(|e| self.mod_position(e))
+            };
+            let level = written(layout::Edit::Level).unwrap_or(level);
+            let pan = written(layout::Edit::Pan).map_or(pan, |a| a * 2.0 - 1.0);
             deckard_surface::MixView {
                 level: deckard_model::level_db(level),
                 pan,
@@ -4192,8 +4231,10 @@ impl App {
                                 rgb: layout::rgb(p, g, Some(s)),
                                 color: layout::colour_index(p, g, Some(s)),
                                 muted: snd.muted,
-                                // (A sound may only play MIDI out, with no plug-ins.)
+                                // (A sound may only play MIDI out, with no plug-ins. A Sampler
+                                // whose module didn't become a slot still has samples.)
                                 used: !snd.slots.is_empty()
+                                    || snd.sampler.as_ref().is_some_and(|sm| sm.zones.iter().any(|z| !z.sample.path.is_empty()))
                                     || !snd.name.is_empty()
                                     || snd.channel.midi_out != deckard_model::MidiDest::None
                                     || noted.contains(&s),
@@ -4413,14 +4454,23 @@ impl App {
                     Some(s) => Target::Sound(group, s),
                     None => Target::GroupStrip(group),
                 };
-                layout::apply_acts(self, vec![Act::SetLevel(t, deckard_model::level_from_db(db))]);
+                let level = deckard_model::level_from_db(db);
+                if layout::knob_drag_writes(self, layout::Edit::Level(t)) {
+                    self.modulate(layout::Edit::Level(t), level as f32, false);
+                } else {
+                    layout::apply_acts(self, vec![Act::SetLevel(t, level)]);
+                }
             }
             A::ChannelPan { group, sound, pan } => {
                 let t = match sound {
                     Some(s) => Target::Sound(group, s),
                     None => Target::GroupStrip(group),
                 };
-                layout::apply_acts(self, vec![Act::SetPan(t, pan)]);
+                if layout::knob_drag_writes(self, layout::Edit::Pan(t)) {
+                    self.modulate(layout::Edit::Pan(t), ((pan + 1.0) / 2.0) as f32, false);
+                } else {
+                    layout::apply_acts(self, vec![Act::SetPan(t, pan)]);
+                }
             }
             A::MuteGroup(group) => layout::apply_acts(self, vec![Act::ToggleMute(Target::Group(group))]),
             A::SoloGroup(group) => self.solo(layout::Channel::Group(group)),
@@ -5260,6 +5310,7 @@ impl App {
     fn note_in(&mut self, group: usize, sound: usize, pitch: i64, velocity: i64) {
         let Some(doc) = self.doc.clone() else { return };
         let d = doc.borrow();
+        self.remember_libraries();
         let Ok(out) = self.output.get_or_insert_with(|| open_output(&self.settings, &mut self.output_fallback)) else { return };
         if out.has_engine() {
             out.live(deckard_engine::Live::NoteIn { group, sound, pitch, velocity, thru: false });
@@ -5285,6 +5336,7 @@ impl App {
     fn follow_edits(&mut self) {
         let Some(doc) = self.doc.clone() else { return };
         let d = doc.borrow();
+        self.remember_libraries();
         let Some(Ok(out)) = &self.output else { return };
         // An edit that reached the engine while it switched modes is sent again.
         let (mode, stale) = out.telemetry(|t| (t.mode, t.stale && t.actions >= self.adopt_sent));
@@ -6931,6 +6983,11 @@ impl App {
             .unwrap_or_else(|| deckard_library::user::documents().unwrap_or_default().join("Native Instruments").join("Maschine 3"))
     }
 
+    /// The sample search uses the same folders the library browser scans.
+    fn remember_libraries(&mut self) {
+        self.samples.library_dirs = self.library_roots().into_iter().map(|r| r.path).collect();
+    }
+
     /// The folders DECKARD's library indexes: Maschine's user folders (Maschine 3's,
     /// and Maschine 2's beside it), listed under User, and the library folders from
     /// Preferences, under Factory, each its folder's name (less " Library") as product.
@@ -7091,6 +7148,18 @@ impl App {
     fn browse(&mut self, a: browser::BrowseAct) {
         use browser::BrowseAct as B;
         self.browser.touch();
+        if matches!(a, B::Rescan) {
+            let roots = self.library_roots();
+            self.browser.rescan(roots);
+            self.status = "Library refreshed".into();
+            return;
+        }
+        if let B::Folder(dir) = &a
+            && !dir.is_dir()
+        {
+            self.status = format!("{} isn't a folder", dir.display());
+            return;
+        }
         let b = &mut self.browser;
         let mut q = b.query.clone();
         match a {
@@ -7201,6 +7270,7 @@ impl App {
                 }
                 return;
             }
+            B::Rescan => return,
             B::LibraryFolder(dir, on) => {
                 let folders = &mut self.settings.library_folders;
                 folders.retain(|d| *d != dir);
@@ -12228,6 +12298,63 @@ mod tests {
         h.run_steps(4);
         assert!(slots(&h).is_empty());
         assert_eq!(h.state().slot, None);
+    }
+
+    /// Auto-write on while the song plays: dragging a mixer strip's fader or pan writes
+    /// modulation and leaves them where they are. Otherwise it moves them.
+    #[test]
+    fn dragging_a_mixer_fader_writes_with_auto_write_on() {
+        let mut app = App { show_controller: false, follow: true, grid: PPQ / 4, prop_set: 1, ..Default::default() };
+        app.new_project();
+        {
+            let mut d = app.doc.as_ref().unwrap().borrow_mut();
+            d.add_pattern(0, 0, "Pattern 1").unwrap();
+            d.assign_pattern(0, 0, Some(0)).unwrap();
+        }
+        (app.group, app.pattern, app.scene, app.sound) = (0, 0, 0, 0);
+        (app.mixer, app.mixer_sounds) = (true, false);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1500.0, 930.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App| app.frame(ui), app);
+        h.run_steps(4);
+        let strips: Vec<(layout::Channel, egui::Rect)> =
+            h.ctx.data(|d| d.get_temp(egui::Id::new("deckard-mixer-strips"))).expect("mixer drawn");
+        let r = strips.iter().find(|(c, _)| *c == layout::Channel::Group(0)).unwrap().1;
+        let x = r.left() + 48.0;
+        let zero_db = r.bottom() - 186.0 + 26.0 + 25.0;
+        let pan = egui::pos2(r.left() + 5.0 + 30.5, r.bottom() - 186.0 + 8.0);
+        let level = |h: &Harness<'static, App>| project_of(h).groups[0].level;
+        let pan_now = |h: &Harness<'static, App>| project_of(h).groups[0].pan;
+        // Stopped: it moves.
+        let before = level(&h);
+        drag(&mut h, egui::pos2(x, zero_db), egui::pos2(x, zero_db + 22.0));
+        assert!(level(&h) < before * 0.8, "about -10 dB: {}", level(&h));
+        // Playing with Auto-write on: written.
+        let before = level(&h);
+        h.state_mut().auto_write = true;
+        h.state_mut().transport_play();
+        if !matches!(h.state().output, Some(Ok(_))) {
+            eprintln!("no audio output; skipping");
+            return;
+        }
+        let wait = std::time::Instant::now();
+        while h.state().playhead().is_none() && wait.elapsed() < std::time::Duration::from_secs(60) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let at = zero_db + 22.0;
+        drag(&mut h, egui::pos2(x, at), egui::pos2(x, at + 15.0));
+        drag(&mut h, pan, pan + egui::vec2(10.0, 0.0));
+        h.state_mut().stop();
+        h.run_steps(2);
+        let p = project_of(&h);
+        assert_eq!(level(&h), before, "the fader stays");
+        assert_eq!(pan_now(&h), 0.0, "and the pan");
+        let points =
+            |field: &str| p.groups[0].patterns[0].mods.iter().filter(|m| m.sound.is_none() && m.slot.is_none() && m.field == field).count();
+        assert!(points("level") > 0, "the level written");
+        assert!(points("pan") > 0, "the pan written");
+        assert!(p.groups[0].patterns[0].mods.iter().filter(|m| m.field == "level").all(|m| m.value < 0.0), "down from the fader's place");
     }
 
     /// The Mixer: a strip per group; the fader sets the level, M mutes, right-click on
