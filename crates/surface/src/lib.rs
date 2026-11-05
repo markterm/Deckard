@@ -47,6 +47,8 @@ pub struct View {
     pub strip_position: i64,
     /// Touch Auto-write: a knob touched with Auto-write on writes its modulation.
     pub touch_auto_write: bool,
+    /// The focus stays where it's put: picking another group's pattern doesn't move it.
+    pub keep_focus: bool,
     pub fixed_velocity: bool,
     /// The velocity the pads play with Fixed Velocity on (0–127).
     pub velocity: i64,

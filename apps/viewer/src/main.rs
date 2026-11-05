@@ -2167,6 +2167,9 @@ impl App {
         ui.checkbox(&mut self.settings.jam_enabled, "Maschine JAM").on_hover_text(
             "DECKARD drives a JAM plugged in over USB. Switch it off when Maschine should have the JAM to itself: with both running, each acts on every press and they overwrite each other's lights.",
         );
+        ui.checkbox(&mut self.settings.focus_follows, "Focus the group MIDI is recorded into").on_hover_text(
+            "While recording, MIDI going into another group makes it the focused group, and so does picking a pattern on a JAM's Project View. Off: the focus stays where you put it, and the MIDI still records into its group and the pattern still plays.",
+        );
         ui.separator();
         let (ins, outs) = self.midi_ports().clone();
         for (title, ports, prefix) in [("Inputs", &ins, "in:"), ("Outputs", &outs, "out:")] {
@@ -3645,6 +3648,11 @@ impl App {
                     continue;
                 }
             };
+            // MIDI recorded into another group: that group and sound have the focus.
+            if r.midi && r.velocity > 0 && r.group != self.group && self.settings.focus_follows {
+                self.focus_group(r.group);
+                self.sound = r.sound;
+            }
             // A note into a growing pattern's last bar adds the next.
             if r.velocity > 0
                 && let Some(grow) = &mut self.grow
@@ -4054,6 +4062,7 @@ impl App {
             auto_write: self.auto_write,
             strip_position: i64::from(self.settings.strip_position),
             touch_auto_write: self.settings.touch_auto_write,
+            keep_focus: !self.settings.focus_follows,
             follow: self.follow,
             position: head.map(|h| h.position as i64),
             progress: self.pattern_at(self.group, head).map(|(at, length)| at as f64 / length as f64),
