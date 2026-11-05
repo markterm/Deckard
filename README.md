@@ -20,7 +20,9 @@ DECKARD also does a few things Maschine doesn't:
 ## What you need
 
 - **A computer** running macOS, Linux or Windows.
-- **Speakers or headphones.** DECKARD uses your system's audio output.
+- **Speakers or headphones.** DECKARD uses your system's audio output. On Windows, a
+  build made with the `asio` feature can also play through an interface's ASIO driver,
+  for lower latency (Preferences ▸ Audio; [how to build it](DEVELOPMENT.md#asio-windows-optional)).
 - **Optional: a Maschine MK3.** DECKARD drives its pads, buttons, knobs, lights and
   both screens directly.
 - **Optional: a Novation Launchpad Pro MK3**, connected over USB.
