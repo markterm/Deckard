@@ -913,6 +913,21 @@ fn group_banks_follow_the_d_pad_and_the_focus() {
     assert_eq!(apps(&press(&mut d, &v, "GROUP_D")), [], "past it");
 }
 
+/// By default another group's pattern takes the focus with it; with the setting off, the
+/// pattern goes on and the focus stays.
+#[test]
+fn picking_another_groups_pattern_can_leave_the_focus() {
+    let mut d = jam();
+    let mut v = jam_view();
+    v.groups[1].patterns = vec![v.groups[1].patterns[0].clone(); 2];
+    assert_eq!(apps(&pad(&mut d, &v, 2, 2)), [Action::FocusGroup(1), Action::PickPattern(1)]);
+    assert_eq!(apps(&pad(&mut d, &v, 2, 3)), [Action::FocusGroup(1), Action::NewPatternIn(1)], "an empty place");
+    v.keep_focus = true;
+    assert_eq!(apps(&pad(&mut d, &v, 2, 2)), [Action::ScenePattern { group: 1, pattern: Some(1) }]);
+    assert_eq!(apps(&pad(&mut d, &v, 2, 3)), [Action::NewPatternIn(1)]);
+    assert_eq!(apps(&pad(&mut d, &v, 1, 1)), [Action::PickPattern(0)], "its own group's: as ever");
+}
+
 #[test]
 fn up_and_down_scroll_patterns_in_project_view() {
     let mut d = jam();

@@ -1095,6 +1095,7 @@ fn state(lua: &Lua, v: &View) -> mlua::Result<Table> {
     t.set("auto_write", v.auto_write)?;
     t.set("strip_position", v.strip_position)?;
     t.set("touch_auto_write", v.touch_auto_write)?;
+    t.set("keep_focus", v.keep_focus)?;
     t.set("fixed_velocity", v.fixed_velocity)?;
     t.set("velocity", v.velocity)?;
     let scale = lua.create_table()?;

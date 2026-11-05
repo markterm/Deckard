@@ -963,10 +963,12 @@ local function press_project(s, col, row)
     end
   elseif not exists then
     -- An unlit pad makes a pattern (manual 6.1.3).
-    if g ~= s.group then deckard.focus_group(g) end
+    if g ~= s.group and not s.keep_focus then deckard.focus_group(g) end
     deckard.new_pattern(g)
   elseif group.scene_pattern == p then
     deckard.scene_pattern(g, nil)
+  elseif g ~= s.group and s.keep_focus then
+    deckard.scene_pattern(g, p)
   else
     if g ~= s.group then deckard.focus_group(g) end
     deckard.pick_pattern(p)

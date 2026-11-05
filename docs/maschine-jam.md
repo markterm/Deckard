@@ -13,6 +13,10 @@ Preferences ▸ MIDI ▸ **Maschine JAM** switches it off. DECKARD opens the JAM
 Maschine is running: with both running, each acts on every press and they overwrite each other's
 lights, so switch one off.
 
+Preferences ▸ MIDI ▸ **Focus the group MIDI is recorded into** also decides what a Project View pad does
+to the focus. On, the default, picking another group's pattern focuses that group, as the manual has it.
+Off, the pattern goes on and the focus stays where it was.
+
 ## There's no on-screen overlay
 
 What Maschine's overlay shows goes to the status bar as one line, and the encoder walks those

@@ -188,6 +188,10 @@ fn channel_values_are_set_and_shown() {
     assert_eq!(app.surface_view().groups[0].mix.swing, 20.0);
     app.surface_act(A::SetChannelSwing { group: Some(0), sound: Some(1), amount: 30.0 });
     assert_eq!(app.surface_view().groups[0].sounds[1].mix.swing, 30.0);
+    assert!(!app.surface_view().keep_focus, "the focus follows by default");
+    app.settings.focus_follows = false;
+    assert!(app.surface_view().keep_focus);
+    app.settings.focus_follows = true;
     app.surface_act(A::CueDb(0.0));
     assert!((app.surface_view().cue_level - 0.75).abs() < 1e-3, "unity");
     assert_eq!(app.surface_view().input_levels, [0.75, 0.75], "unity to start with");
