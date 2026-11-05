@@ -50,11 +50,14 @@ pub struct View {
     pub fixed_velocity: bool,
     /// The velocity the pads play with Fixed Velocity on (0–127).
     pub velocity: i64,
-    /// The master channel's meter (left, right; amplitude), the cue channel's level as
-    /// stored and the audio input's meter, for a controller with meters of its own.
+    /// The master channel's and cue bus's meters (left, right; amplitude), the cue's level
+    /// as stored, and the first two stereo inputs' meters and levels as stored, for a
+    /// controller with meters of its own.
     pub master_meter: (f32, f32),
+    pub cue_meter: (f32, f32),
     pub cue_level: f64,
-    pub input_meter: (f32, f32),
+    pub input_meters: [(f32, f32); 2],
+    pub input_levels: [f64; 2],
     /// Keyboard and Chords mode's root (MIDI note).
     pub scale_root: i64,
     /// Keyboard and Chords mode's scale: its bank (0 Main … 7 Minor) and its place in
@@ -880,6 +883,10 @@ pub enum Action {
     },
     /// The cue channel's level in dB.
     CueDb(f64),
+    /// Stereo input `.0`'s level in dB (the first two have one).
+    InputDb(usize, f64),
+    /// The inputs' meters wanted: the input stays open for them, with no sound taking it.
+    WatchInput(bool),
     /// The library panel of the main window shown or not, for a controller with no screens.
     Library(bool),
     /// Control knob `.0` (from 0) back to its default.

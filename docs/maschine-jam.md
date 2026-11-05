@@ -57,11 +57,18 @@ and the pads don't play.
 | ◀ ▶ | Pages of plug-in parameters, or sounds 1-8 and 9-16 | METRO, LOOP |
 | TEMPO | The encoder sets the tempo | TAP |
 | GRID | The encoder sets Step, Nudge, Arrange and Perform grids; held, 1-4 pick 1/4, 1/8, 1/16, 1/32 | REC MODE |
-| MST, GRP, CUE, IN1 | What the meters show and the encoder sets | IN1: IN 2 |
+| MST, GRP, CUE, IN1 | What the meters show and the encoder sets (0.5 dB a click) | IN1: IN 2 |
 | LOCK | Takes or recalls a snapshot; in Lock View, updates the one in focus | Lock View |
 | Footswitch | Tip: play. Ring: record | |
 
 SHIFT with the encoder is finer, or ten results at a time in the library.
+
+IN1 and IN2 are the interface's first two stereo inputs, as Preferences ▸ Audio ▸ Routing connects them.
+Their levels are DECKARD's own, on the way in, so a sound taking the input and the recorder both hear
+them; they're kept in the settings and also in Preferences ▸ Audio. The input stays open while one is on
+the meters, so it reads with no sound taking it.
+
+CUE shows the cue bus: the channels with their headphones on, the metronome and the browser's prehear.
 
 ## The strips
 
@@ -97,9 +104,7 @@ previous or next.
 | Pad velocity from pressure | The click-pads report on and off: every hit plays at the song's Fixed Velocity value |
 | Loop range by SHIFT + ▶ and two scene buttons | SHIFT + ▶ switches looping; DECKARD has no scene loop range yet |
 | A group's Tune | DECKARD has no group tune: it moves the group's Samplers together. Plug-in instruments don't move |
-| Level and Swing written with AUTO | Only what's a Control-page parameter writes modulation; the mixer's level isn't one yet |
-| IN1 sets an input's level | Meters only: an input's level is the audio interface's. The meter reads only while an input is open |
-| CUE's meter | Sets the level; DECKARD has no cue meter yet, so the column stays dark |
+| Swing and the sends written with AUTO | Level, pan and Control-page parameters write modulation; swing and the sends don't yet |
 | Variation's on-screen settings (SHIFT + E) | The focused sound's Groove ▸ Variation page, on the strips |
 | Plug-in mode, MIDI mode, Controller Editor, SHIFT + F (TS EDIT), SHIFT + H (INSTANCE) | Not here |
 | LOCK again updates the snapshot | LOCK recalls it, as on DECKARD's MK3; in Lock View it updates the one in focus |
@@ -132,3 +137,5 @@ Ticked by hand. macOS and Linux are unchecked until someone tries them.
 - [ ] With an MK3: a group picked on either moves both
 - [ ] On closing, what the JAM shows; and that Maschine redraws it afterwards
 - [ ] Report `0x40` while pressing pads softly and hard: confirm the pads have no pressure
+- [ ] IN1 and IN2 read a signal, in stereo, and the encoder moves what a sound taking them plays
+- [ ] CUE reads a cued channel and the click; turn it and only that output changes

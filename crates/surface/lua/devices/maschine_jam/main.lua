@@ -1212,6 +1212,11 @@ local function meter_button(name)
   elseif name == "CUE" and not shift() then
     st.meter = "cue"
   end
+  local watching = st.meter == "in1" or st.meter == "in2"
+  if watching ~= (st.watching or false) then
+    st.watching = watching
+    deckard.watch_input(watching)
+  end
 end
 
 -- A channel mode's button.
@@ -1460,7 +1465,10 @@ function M.encoder(steps)
     deckard.cue_db(to)
     say(string.format("Cue %.1f dB", to))
   else
-    say("Input level: set it on the audio interface")
+    local n = st.meter == "in2" and 2 or 1
+    local to = math.max(deckard.level_to_db(s.input_levels[n]), -120) + by
+    deckard.input_db(n, to)
+    say(string.format("In %d %.1f dB", n, to))
   end
 end
 
@@ -1853,7 +1861,9 @@ local function meter_db(s)
     local g = focused_group(s)
     return g and g.meter or SILENT
   end
-  if st.meter == "in1" or st.meter == "in2" then return s.input_meter end
+  if st.meter == "in1" then return s.input_meters[1] end
+  if st.meter == "in2" then return s.input_meters[2] end
+  if st.meter == "cue" then return s.cue_meter end
   return SILENT
 end
 

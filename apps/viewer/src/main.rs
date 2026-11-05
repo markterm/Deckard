@@ -62,6 +62,10 @@ mod expression_record_tests;
 mod group_edit_tests;
 #[cfg(test)]
 mod header_tests;
+mod input_levels;
+mod jam_io;
+#[cfg(test)]
+mod jam_tests;
 mod keep_running;
 mod keys;
 mod layout;
@@ -78,9 +82,6 @@ mod midi_devices;
 mod midi_file;
 mod midi_io;
 mod midi_monitor;
-mod jam_io;
-#[cfg(test)]
-mod jam_tests;
 mod mk3_io;
 mod mod_slots;
 mod modulation;
@@ -565,6 +566,7 @@ fn open_live_input(
     device: &Option<String>,
     routing: &[Option<usize>],
     live: deckard_engine::LiveIn,
+    inputs: std::sync::Arc<input_levels::InputBus>,
     rate: u32,
 ) -> Result<cpal::Stream, String> {
     use cpal::traits::{DeviceTrait, StreamTrait};
@@ -583,13 +585,7 @@ fn open_live_input(
             move |data: &[f32], _| {
                 if let Ok(mut q) = live.try_lock() {
                     for f in data.chunks(channels) {
-                        let mut frame = [0f32; 32];
-                        for (i, c) in map.iter().enumerate() {
-                            if let Some(c) = c {
-                                frame[i] = f[*c];
-                            }
-                        }
-                        q.push_back(frame);
+                        q.push_back(inputs.frame(f, &map));
                     }
                     // A few blocks at most (nothing may be reading).
                     while q.len() > 8192 {
@@ -882,6 +878,14 @@ pub struct App {
     /// The interface input, open while a sound takes audio from it (Input ▸ Audio),
     /// for (device, routing).
     live_input: Option<(cpal::Stream, InputKey)>,
+    /// The inputs' levels and meters, shared with the input streams; and the meters as
+    /// shown.
+    input_bus: std::sync::Arc<input_levels::InputBus>,
+    input_meters: [(f32, f32); input_levels::PAIRS],
+    /// A controller shows the inputs' meters: the input stays open for them.
+    input_watched: bool,
+    /// The input was opened for the meters alone, with no engine started for it.
+    input_for_meters: bool,
     settings_input_failed: Option<InputKey>,
     /// The page of a plug-in's parameters shown, and what it shows.
     plugin_page: usize,
@@ -999,6 +1003,7 @@ pub struct App {
     peaks: std::collections::HashMap<layout::Channel, [(f32, std::time::Instant); 2]>,
     /// The master's meter (left, right), falling back like the others.
     master_meter: (f32, f32),
+    cue_meter: (f32, f32),
     /// The audio thread's load (0..1) for the header's CPU meter, and the stats it was
     /// last worked out from (busy, audio µs).
     cpu_load: f32,
@@ -2086,6 +2091,22 @@ impl App {
         let (in_device, out_device) =
             (self.settings.input_device.clone().or(default_in), self.settings.output_device.clone().or(default_out));
         let (in_channels, out_channels) = (channels_of(&inputs, &in_device), channels_of(&outputs, &out_device));
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Input level").on_hover_text(
+                "In 1's and In 2's levels on the way in: what sounds taking them and the recorder hear (a Maschine JAM's IN1 and IN2)",
+            );
+            for input in 0..input_levels::PAIRS {
+                ui.label(format!("In {}", input + 1));
+                let mut db = deckard_model::level_db(self.settings.input_levels[input]).clamp(-60.0, 10.0);
+                let drag = egui::DragValue::new(&mut db).range(-60.0..=10.0).speed(0.1).fixed_decimals(1).suffix(" dB");
+                if ui.add(drag).changed() {
+                    self.settings.input_levels[input] = deckard_model::level_from_db(db);
+                    self.input_bus.set_levels(&self.settings.input_levels);
+                    self.settings.save();
+                }
+            }
+        });
         ui.separator();
         ui.horizontal(|ui| {
             ui.strong("Routing");
@@ -4066,7 +4087,9 @@ impl App {
         v.master_volume = p.master_level;
         v.master_db = deckard_model::level_db(p.master_level);
         v.master_meter = self.master_meter;
-        v.input_meter = self.recorder.view.meter;
+        v.cue_meter = self.cue_meter;
+        v.input_meters = self.input_meters;
+        v.input_levels = self.settings.input_levels;
         v.cue_level = p.cue_level;
         v.scale_root = self.scale.0;
         v.numerator = p.numerator;
@@ -4618,6 +4641,14 @@ impl App {
             }
             A::SetTune { group, sound, semitones } => self.jam_tune(group, sound, semitones),
             A::CueDb(db) => layout::apply_acts(self, vec![Act::SetParam(Target::Song, "cue_level", deckard_model::level_from_db(db))]),
+            A::InputDb(input, db) => {
+                if let Some(level) = self.settings.input_levels.get_mut(input) {
+                    *level = deckard_model::level_from_db(db);
+                    self.input_bus.set_levels(&self.settings.input_levels);
+                    self.settings.save();
+                }
+            }
+            A::WatchInput(on) => self.input_watched = on,
             A::Library(on) => {
                 if self.browser.open != on {
                     self.browse(browser::BrowseAct::Toggle);
@@ -5264,16 +5295,18 @@ impl App {
     }
 
     /// Open the interface input while a sound takes audio from it (and an engine to
-    /// play it through); close it when none does.
-    fn input_sync(&mut self) {
+    /// play it through) or a controller shows its meters; close it when neither does.
+    pub(crate) fn input_sync(&mut self) {
         let Some(doc) = self.doc.clone() else { return };
-        let wants = doc
+        let plays = doc
             .borrow()
             .project()
             .groups
             .iter()
             .flat_map(|g| &g.sounds)
             .any(|s| matches!(s.channel.audio_in, deckard_model::AudioSource::Ext(_)));
+        let wants = plays || self.input_watched;
+        self.input_bus.set_levels(&self.settings.input_levels);
         let key = (self.settings.input_device.clone(), self.settings.input_routing.clone());
         if !wants {
             self.live_input = None;
@@ -5282,20 +5315,32 @@ impl App {
         }
         // Open already, or failed with these settings (no retrying every frame).
         if self.live_input.as_ref().is_some_and(|(_, k)| *k == key) || self.settings_input_failed.as_ref() == Some(&key) {
+            // Open for a meter, and now a sound takes it: it needs an engine to play through.
+            if plays
+                && std::mem::take(&mut self.input_for_meters)
+                && let Some(Ok(out)) = &self.output
+                && !out.has_engine()
+            {
+                let d = doc.borrow();
+                let (mut engine, _) = Engine::new(d.project(), self.path.as_deref(), out.rate, Mode::Arrangement, &mut self.samples);
+                engine.sequencing = false;
+                out.play(engine);
+            }
             return;
         }
         let Ok(out) = self.output.get_or_insert_with(|| open_output(&self.settings, &mut self.output_fallback)) else { return };
         let live: deckard_engine::LiveIn = Default::default();
-        match open_live_input(&key.0, &key.1, live.clone(), out.rate) {
+        match open_live_input(&key.0, &key.1, live.clone(), self.input_bus.clone(), out.rate) {
             Ok(stream) => {
                 out.set_live_in(live);
-                if !out.has_engine() {
+                if plays && !out.has_engine() {
                     let d = doc.borrow();
                     let (mut engine, _) = Engine::new(d.project(), self.path.as_deref(), out.rate, Mode::Arrangement, &mut self.samples);
                     engine.sequencing = false;
                     out.play(engine);
                 }
                 self.live_input = Some((stream, key));
+                self.input_for_meters = !plays;
                 self.settings_input_failed = None;
             }
             Err(e) => {
@@ -5369,6 +5414,15 @@ impl App {
             Some(Ok(out)) => out.take_meters(),
             _ => (Vec::new(), (0.0, 0.0)),
         };
+        let cue = match &self.output {
+            Some(Ok(out)) => out.take_cue_peak(),
+            _ => (0.0, 0.0),
+        };
+        self.cue_meter = ((self.cue_meter.0 * fall).max(cue.0), (self.cue_meter.1 * fall).max(cue.1));
+        for (pair, shown) in self.input_meters.iter_mut().enumerate() {
+            let peak = self.input_bus.take_peaks(pair);
+            *shown = ((shown.0 * fall).max(peak.0), (shown.1 * fall).max(peak.1));
+        }
         // Headroom: the peak of each channel (sounds, their groups, the master).
         for (g, row) in fresh.iter().enumerate() {
             let mut gp = 0f32;
@@ -5677,6 +5731,7 @@ impl App {
                 output,
                 device: self.settings.input_device.clone(),
                 routing: &self.settings.input_routing,
+                inputs: self.input_bus.clone(),
                 clock,
                 dir: PathBuf::new(),
                 stem: String::new(),
@@ -6712,6 +6767,7 @@ impl App {
             output,
             device: self.settings.input_device.clone(),
             routing: &self.settings.input_routing,
+            inputs: self.input_bus.clone(),
             clock,
             dir,
             stem,

@@ -423,7 +423,9 @@ fn install_lights(lua: &Lua, lights: &Rc<RefCell<deckard_jam::Leds>>) -> mlua::R
                 leds.scene(n - 1, colour_of(&name, &how, &bright)?);
                 return Ok(());
             }
-            if let Some(g) = name.strip_prefix("GROUP_").filter(|g| g.len() == 1).and_then(|g| g.bytes().next()).filter(|g| (b'A'..=b'H').contains(g)) {
+            if let Some(g) =
+                name.strip_prefix("GROUP_").filter(|g| g.len() == 1).and_then(|g| g.bytes().next()).filter(|g| (b'A'..=b'H').contains(g))
+            {
                 leds.group(usize::from(g - b'A'), colour_of(&name, &how, &bright)?);
                 return Ok(());
             }

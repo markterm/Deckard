@@ -492,6 +492,8 @@ These work for any script, and exist because a device has no page on screen to g
 | `deckard.set_send(group, sound, aux, level)`, `deckard.set_swing(group, sound, amount)`, `deckard.set_tune(group, sound, semitones)` | A channel's aux send (1 or 2; level 0..1, 0.75 unity), swing (0–100; no group: the song's) and Sampler tune (no sound: the group's Samplers move together). `sound` may be `nil`. |
 | `deckard.choke_all()` | Every voice ends. Nothing else changes. |
 | `deckard.cue_db(db)` | The cue channel's level. |
+| `deckard.input_db(input, db)` | In 1's or In 2's level, on the way in. |
+| `deckard.watch_input(on)` | Keep the interface input open for `input_meters`, with no sound taking it. |
 | `deckard.library(open)` | The main window's library panel; `state().browser` fills while it's open. |
 | `deckard.settings_wanted(on)` | `state().settings` fills with no Settings page showing. |
 | `deckard.reset_knob(n)` | Control knob `n` back to its default. |
@@ -500,7 +502,7 @@ These work for any script, and exist because a device has no page on screen to g
 | `deckard.lock("slot", n)` | Snapshot `n` (from 1) recalled or taken, whatever bank shows. |
 | `deckard.level_to_db(level)`, `deckard.db_to_level(db)` | A level as stored (0..1, 0.75 unity) and in dB. |
 
-`deckard.state()` also has `master_meter` and `input_meter` (`{ left, right }` in dB), `cue_level`,
+`deckard.state()` also has `master_meter`, `cue_meter` and `input_meters[1..2]` (`{ left, right }` in dB), `cue_level`, `input_levels[1..2]` (as stored),
 and `scale.root`; a group's or sound's table has `aux` (its sends' levels), `swing` and `tune` (`nil`
 with no Sampler), and `perform` has `mode` and `name`.
 
