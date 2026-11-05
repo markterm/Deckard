@@ -114,7 +114,6 @@ previous or next.
 | Variation's on-screen settings (SHIFT + E) | The focused sound's Groove ▸ Variation page, on the strips |
 | Plug-in mode, MIDI mode, Controller Editor, SHIFT + F (TS EDIT), SHIFT + H (INSTANCE) | Not here |
 | LOCK again updates the snapshot | LOCK recalls it, as on DECKARD's MK3; in Lock View it updates the one in focus |
-| Pattern slots with gaps | A group's patterns have no gaps: an unlit pad adds after the last |
 
 ## Checking it
 
