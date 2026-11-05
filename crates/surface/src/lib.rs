@@ -1316,7 +1316,6 @@ impl Surface {
     pub fn add_picture(&self, key: &str, thumb: bool, w: usize, h: usize, px: Vec<[u8; 4]>) {
         if px.len() == w * h {
             self.pictures.borrow_mut().insert((key.to_string(), thumb), std::sync::Arc::new(screen::Image { w, h, px }));
-            self.last_ops = None;
         }
     }
 

@@ -4334,6 +4334,7 @@ impl App {
                 self.browse(browser::BrowseAct::Toggle);
                 self.browse(browser::BrowseAct::Toggle);
             }
+            self.browser.poll();
             self.refresh_surface_settings();
             let mut view = self.surface_view();
             let mut actions = Vec::new();
@@ -4341,10 +4342,19 @@ impl App {
                 actions.extend(self.surface.event(e, &view, now));
             }
             actions.extend(self.surface.tick(&view, now));
-            if !actions.is_empty() {
-                for a in actions {
-                    self.surface_act(a);
-                }
+            let mut dirty = !actions.is_empty();
+            for a in actions {
+                self.surface_act(a);
+            }
+            if self.surface.page() == "browse" && !self.browser.started() {
+                self.browse(browser::BrowseAct::Toggle);
+                self.browse(browser::BrowseAct::Toggle);
+                dirty = true;
+            }
+            if self.browser.poll() {
+                dirty = true;
+            }
+            if dirty {
                 // (A slot or sound the buttons just focused shows its plug-in's knobs.)
                 self.update_slot_view();
                 self.refresh_surface_settings();
@@ -4993,7 +5003,7 @@ impl App {
                 }
             }
             A::DeletePattern { group, pattern } => {
-                if project.is_some_and(|p| p.groups.get(group).is_some_and(|grp| pattern < grp.patterns.len())) {
+                if project(self).is_some_and(|p| p.groups.get(group).is_some_and(|grp| pattern < grp.patterns.len())) {
                     layout::apply_acts(self, vec![Act::DeletePattern(group, pattern)]);
                 }
             }
@@ -5005,7 +5015,7 @@ impl App {
                 }
             }
             A::DeleteScene(scene) => {
-                if project.is_some_and(|p| p.scenes.len() > 1 && scene < p.scenes.len()) {
+                if project(self).is_some_and(|p| p.scenes.len() > 1 && scene < p.scenes.len()) {
                     layout::apply_acts(self, vec![Act::DeleteScene(scene)]);
                 }
             }
@@ -5017,7 +5027,7 @@ impl App {
                 }
             }
             A::CopyGroup { from, to } => {
-                let Some(p) = project else { return };
+                let Some(p) = project(self) else { return };
                 if from == to || from >= p.groups.len() || to > p.groups.len() {
                     return;
                 }
@@ -5029,7 +5039,7 @@ impl App {
                 layout::apply_acts(self, acts);
             }
             A::CopySound { from, to } => {
-                let Some(p) = project else { return };
+                let Some(p) = project(self) else { return };
                 let sounds = p.groups.get(g).map_or(0, |grp| grp.sounds.len());
                 if from != to && from < sounds && to < sounds {
                     layout::apply_acts(self, vec![Act::CopySound(g, from), Act::PasteSound(g, to)]);
@@ -5043,7 +5053,7 @@ impl App {
                 layout::apply_acts(self, vec![Act::SetParam(t, if aux == 0 { "aux1_level" } else { "aux2_level" }, level)]);
             }
             A::SetChannelSwing { group, sound, amount } => {
-                let Some(p) = project else { return };
+                let Some(p) = project(self) else { return };
                 let (t, swing) = match (group, sound) {
                     (Some(gr), Some(s)) => {
                         let Some(x) = p.groups.get(gr).and_then(|grp| grp.sounds.get(s)) else { return };
@@ -7834,36 +7844,80 @@ impl App {
             Kind::Group | Kind::Sound | Kind::Instrument | Kind::Effect => {
                 let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
                 let mut d = doc.borrow_mut();
-                match item.kind {
-                    Kind::Group => d.load_group_file(g, &bytes)?,
-                    Kind::Sound => d.load_sound_file(g, s, &bytes)?,
+                let slot = match item.kind {
+                    Kind::Group => {
+                        d.load_group_file(g, &bytes)?;
+                        None
+                    }
+                    Kind::Sound => {
+                        d.load_sound_file(g, s, &bytes)?;
+                        (!d.project().groups[g].sounds[s].slots.is_empty()).then_some(0)
+                    }
                     Kind::Instrument => {
                         let slots = &d.project().groups[g].sounds[s].slots;
                         if slots.first().is_some_and(|x| !x.is_instrument()) {
                             return Err("the sound's chain starts with an effect: an instrument can't go before it".into());
                         }
-                        d.load_slot_file(g, s, 0, &bytes)?
+                        d.load_slot_file(g, s, 0, &bytes)?;
+                        Some(0)
                     }
                     _ => {
                         let n = d.project().groups[g].sounds[s].slots.len();
-                        d.load_slot_file(g, s, n, &bytes)?
+                        d.load_slot_file(g, s, n, &bytes)?;
+                        Some(n)
                     }
-                }
+                };
                 drop(d);
-                if !matches!(item.kind, Kind::Group) {
+                if matches!(item.kind, Kind::Group) {
+                    self.editors
+                        .retain(|&(c, ..)| !matches!(c, deckard_doc::Chain::Group(cg) | deckard_doc::Chain::Sound(cg, _) if cg == g));
+                    self.slot_of = None;
+                } else {
+                    let chain = deckard_doc::Chain::Sound(g, s);
+                    self.editors.retain(|&(c, i, _)| !(c == chain && (matches!(item.kind, Kind::Sound) || Some(i) == slot)));
                     self.sound = s;
+                    self.chain_tab = layout::ChainTab::Sound;
+                    self.slot_of = Some(chain);
+                    self.slot = slot;
+                }
+                self.plugin_page = 0;
+                self.plugin_view = None;
+                if self.output.is_some() {
+                    self.load_plugins();
                 }
                 self.status = format!("{} loaded", item.name);
             }
             Kind::Loop => self.drop_samples((g, s), std::slice::from_ref(path)),
             Kind::OneShot => {
                 let smp = deckard_engine::sample::Sample::load(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
-                let has_sampler = doc.borrow().project().groups[g].sounds[s].sampler.is_some();
-                if !has_sampler {
-                    doc.borrow_mut().add_slot(g, s, 0, &deckard_doc::NewModule::Sampler)?;
-                }
-                self.add_zone(g, s, path, smp.frames.len())?;
+                doc.borrow_mut().transaction("Load Sample", |d| {
+                    let snd = &d.project().groups[g].sounds[s];
+                    if snd.sampler.is_none() {
+                        if snd.slots.first().is_some_and(|x| x.is_instrument()) {
+                            d.remove_slot(g, s, 0)?;
+                        }
+                        d.add_slot(g, s, 0, &deckard_doc::NewModule::Sampler)?;
+                    }
+                    let has = d.project().groups[g].sounds[s].sampler.as_ref().is_some_and(|x| !x.zones.is_empty());
+                    let spec = new_zone(
+                        path,
+                        smp.frames.len(),
+                        if has { deckard_doc::ZoneFrom::Zone(0) } else { deckard_doc::ZoneFrom::Template },
+                    );
+                    d.set_zones(g, s, &[spec], "Load Sample")?;
+                    if let Some(stem) = path.file_stem() {
+                        d.rename(deckard_doc::Target::Sound(g, s), &stem.to_string_lossy())?;
+                    }
+                    Ok(())
+                })?;
+                self.editors.retain(|&(c, i, _)| !(c == deckard_doc::Chain::Sound(g, s) && i == 0));
                 self.sound = s;
+                self.chain_tab = layout::ChainTab::Sound;
+                self.slot_of = Some(deckard_doc::Chain::Sound(g, s));
+                self.slot = Some(0);
+                self.plugin_page = 0;
+                self.plugin_view = None;
+                self.zone = 0;
                 self.status = format!("{} into the Sampler on sound {}", item.name, s + 1);
             }
             Kind::Project => {}
@@ -9084,6 +9138,12 @@ impl App {
         self.share_tempo();
         self.follow_engine(ctx, undrawn(ctx, BACKGROUND_PACE));
         self.sync_notes_played();
+        if self.browser.poll() {
+            ctx.request_repaint();
+        }
+        if self.browser.waiting() {
+            ctx.request_repaint_after(undrawn(ctx, std::time::Duration::from_millis(30)));
+        }
         let mut requests = Vec::new();
         if let Some(Ok(c)) = &mut self.controller {
             c.tick(&mut requests);

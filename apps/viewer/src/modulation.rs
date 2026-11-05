@@ -121,9 +121,9 @@ pub fn knob_travel(p: &Project, c: Chain, target: &ModTarget) -> Option<f64> {
         let Chain::Sound(g, s) = c else { return None };
         deckard_model::SAMPLER_PARAMS
             .iter()
-            .any(|(_, k, _)| *k == target.field)
-            .then(|| p.groups[g].sounds[s].sampler.as_ref()?.get(&target.field))
-            .flatten()?
+            .any(|(k, _)| *k == target.field)
+            .then_some(())?;
+        p.groups[g].sounds[s].sampler.as_ref()?.get(&target.field)
     } else {
         slot.param(&target.field)?
     };
