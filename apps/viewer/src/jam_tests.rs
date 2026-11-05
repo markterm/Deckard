@@ -190,6 +190,15 @@ fn channel_values_are_set_and_shown() {
     assert_eq!(app.surface_view().groups[0].sounds[1].mix.swing, 30.0);
     app.surface_act(A::CueDb(0.0));
     assert!((app.surface_view().cue_level - 0.75).abs() < 1e-3, "unity");
+    assert_eq!(app.surface_view().input_levels, [0.75, 0.75], "unity to start with");
+    app.surface_act(A::InputDb(1, -6.0));
+    let levels = app.surface_view().input_levels;
+    assert_eq!(levels[0], 0.75);
+    assert!((levels[1] - deckard_model::level_from_db(-6.0)).abs() < 1e-9);
+    assert!((app.input_bus.gain(2) - deckard_model::level_gain(levels[1]) as f32).abs() < 1e-6, "on the way in");
+    assert_eq!(app.input_bus.gain(0), 1.0);
+    app.settings.input_levels = [0.75, 0.75];
+    app.input_bus.set_levels(&app.settings.input_levels);
     assert_eq!(app.surface_view().scale_root, 60);
 }
 

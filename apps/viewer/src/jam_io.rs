@@ -212,7 +212,8 @@ pub(crate) fn coalesced(events: Vec<Event>) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::with_capacity(events.len());
     for e in events {
         if let Event::Strip { strip, finger, kind: Touch::Move, .. } = e
-            && let Some(last) = out.iter_mut().rev().find(|x| matches!(x, Event::Strip { strip: s, finger: f, .. } if *s == strip && *f == finger))
+            && let Some(last) =
+                out.iter_mut().rev().find(|x| matches!(x, Event::Strip { strip: s, finger: f, .. } if *s == strip && *f == finger))
             && matches!(last, Event::Strip { kind: Touch::Move, .. })
         {
             *last = e;
@@ -249,6 +250,7 @@ impl App {
                 let asked = d.close();
                 self.jam_asked(asked);
                 self.jam_settings_wanted = false;
+                self.input_watched = false;
                 self.status = "Maschine JAM disconnected".into();
             }
             return;
@@ -272,6 +274,8 @@ impl App {
         for (group, sound, pitch, velocity) in pending {
             self.play_note(Live::NoteOn { group, sound, pitch, velocity, length: deckard_model::PPQ });
         }
+        // (The window may be covered, with no frame to do it.)
+        self.input_sync();
         ctx.request_repaint_after(if covered { crate::undrawn(ctx, FRAME) } else { FRAME });
     }
 
@@ -342,8 +346,8 @@ impl App {
     /// A sound's Sampler's tune, or every Sampler's in a group moved together so that the
     /// first is at `semitones`. Sounds with no Sampler have no tune to set.
     pub(crate) fn jam_tune(&mut self, g: usize, sound: Option<usize>, semitones: f64) {
-        use deckard_doc::Target;
         use crate::layout::Act;
+        use deckard_doc::Target;
         let Some(doc) = self.doc.clone() else { return };
         let tunes: Vec<(usize, f64)> = {
             let d = doc.borrow();

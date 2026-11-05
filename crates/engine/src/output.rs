@@ -900,6 +900,11 @@ impl Output {
         })
     }
 
+    /// The cue bus's peaks since the last call (reset).
+    pub fn take_cue_peak(&self) -> (f32, f32) {
+        self.telemetry(|t| std::mem::take(&mut t.cue_peak))
+    }
+
     /// Where zone `zone` of a sound plays, as last published; it is watched from now
     /// on (the last few zones asked about are).
     pub fn zone_position(&self, group: usize, sound: usize, zone: usize) -> Option<usize> {

@@ -343,7 +343,7 @@ behaviour here comes from their logic.
 | 3 | `note_repeat("on", …)`. The Arp is that plus `keyboard_mode(true)`. |
 | 4 | `set_send`, `set_tune`, `set_swing`, and `aux`, `tune`, `swing` on each channel. DECKARD has no group tune, so a group's moves its Samplers together. |
 | 5 | `choke_all`, a new `Live::ChokeAll`: each sound as its choke group would end it. |
-| 6 | `master_meter`, `input_meter`, `cue_level` in `state()`. DECKARD has no cue meter. |
+| 6 | `master_meter`, `cue_meter`, `input_meters`, `cue_level`, `input_levels` in `state()`. The cue bus and the first two inputs meter themselves; those inputs have a level of DECKARD's own. |
 | 7 | `library(open)` fills `browser` while the panel's open; `settings_wanted(on)` fills `settings`. |
 
 Two more turned up on the way: `reset_knob` (a double tap on a Control strip) and `perform_mode`

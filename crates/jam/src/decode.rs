@@ -167,14 +167,8 @@ mod tests {
     fn a_finger_goes_down_moves_and_comes_up() {
         let mut d = Decoder::default();
         let at = |v: f64| v / 1024.0;
-        assert_eq!(
-            run(&mut d, &strips(&[(2, 0, 512)])),
-            [Event::Strip { strip: 2, finger: 0, kind: Touch::Down, pos: at(512.0) }]
-        );
-        assert_eq!(
-            run(&mut d, &strips(&[(2, 0, 600)])),
-            [Event::Strip { strip: 2, finger: 0, kind: Touch::Move, pos: at(600.0) }]
-        );
+        assert_eq!(run(&mut d, &strips(&[(2, 0, 512)])), [Event::Strip { strip: 2, finger: 0, kind: Touch::Down, pos: at(512.0) }]);
+        assert_eq!(run(&mut d, &strips(&[(2, 0, 600)])), [Event::Strip { strip: 2, finger: 0, kind: Touch::Move, pos: at(600.0) }]);
         assert_eq!(run(&mut d, &strips(&[(2, 0, 600)])), [], "held still");
         assert_eq!(run(&mut d, &strips(&[])), [Event::Strip { strip: 2, finger: 0, kind: Touch::Up, pos: at(600.0) }]);
     }

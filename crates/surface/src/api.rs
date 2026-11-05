@@ -870,6 +870,8 @@ pub fn install(lua: &Lua, shared: &Rc<RefCell<Shared>>) -> mlua::Result<()> {
         Action::SetTune { group, sound, semitones: semitones.clamp(-36.0, 36.0) }
     });
     request!("cue_db", (db: f64) => Action::CueDb(db.min(MAX_DB)));
+    request!("input_db", (input: usize, db: f64) => Action::InputDb(index(input, "an input")?.min(1), db.min(MAX_DB)));
+    request!("watch_input", (on: bool) => Action::WatchInput(on));
     request!("library", (open: bool) => Action::Library(open));
     indexed!("reset_knob", "a knob", Action::ResetKnob);
     request!("perform_mode", (group: usize, mode: usize) => Action::PerformMode { group: index(group, "a group")?, mode: index(mode, "a mode")?.min(7) });
@@ -1026,6 +1028,7 @@ fn state(lua: &Lua, v: &View) -> mlua::Result<Table> {
         lt.set("retrigger", l.retrigger)?;
         lt.set("name", l.name.as_str())?;
         lt.set("points", lua.create_sequence_from(l.points.iter().copied())?)?;
+        lt.set("marks", lua.create_sequence_from(l.marks.iter().copied())?)?;
         lt.set("note_off", l.note_off)?;
         lfos.set(i + 1, lt)?;
     }
@@ -1077,8 +1080,14 @@ fn state(lua: &Lua, v: &View) -> mlua::Result<Table> {
     t.set("volume", v.master_volume)?;
     t.set("volume_db", v.master_db)?;
     t.set("master_meter", lua.create_sequence_from([db(v.master_meter.0), db(v.master_meter.1)])?)?;
-    t.set("input_meter", lua.create_sequence_from([db(v.input_meter.0), db(v.input_meter.1)])?)?;
+    t.set("cue_meter", lua.create_sequence_from([db(v.cue_meter.0), db(v.cue_meter.1)])?)?;
     t.set("cue_level", v.cue_level)?;
+    let inputs = lua.create_table()?;
+    for m in v.input_meters {
+        inputs.push(lua.create_sequence_from([db(m.0), db(m.1)])?)?;
+    }
+    t.set("input_meters", inputs)?;
+    t.set("input_levels", lua.create_sequence_from(v.input_levels)?)?;
     t.set("playing", v.playing)?;
     t.set("recording", v.recording)?;
     t.set("looping", v.looping)?;

@@ -677,7 +677,9 @@ fn meters_show_what_mst_grp_and_in_choose() {
     let mut v = jam_view();
     v.master_meter = (1.0, 0.0);
     v.groups[0].mix.meter = (0.0, 1.0);
-    let column = |l: &deckard_jam::Leds, c: usize| l.buttons[1 + METER_LEDS + c * 8..1 + METER_LEDS + (c + 1) * 8].iter().filter(|b| **b != 0).count();
+    let column = |l: &deckard_jam::Leds, c: usize| {
+        l.buttons[1 + METER_LEDS + c * 8..1 + METER_LEDS + (c + 1) * 8].iter().filter(|b| **b != 0).count()
+    };
     let l = d.leds(&v, Instant::now());
     assert_eq!((column(&l, 0), column(&l, 1)), (8, 0), "the master by default");
     press(&mut d, &v, "GRP");
@@ -689,6 +691,45 @@ fn meters_show_what_mst_grp_and_in_choose() {
     press(&mut d, &v, "IN1");
     release(&mut d, &v, "SHIFT");
     assert_eq!(button_light(&mut d, &v, "IN2"), deckard_jam::leds::ON);
+}
+
+#[test]
+fn in1_in2_and_cue_meter_their_own() {
+    let mut d = jam();
+    let mut v = jam_view();
+    v.input_meters = [(1.0, 0.0), (0.0, 1.0)];
+    v.cue_meter = (1.0, 1.0);
+    let column = |l: &deckard_jam::Leds, c: usize| {
+        l.buttons[1 + METER_LEDS + c * 8..1 + METER_LEDS + (c + 1) * 8].iter().filter(|b| **b != 0).count()
+    };
+    assert_eq!(apps(&press(&mut d, &v, "IN1")), [Action::WatchInput(true)], "held open for the meter");
+    let l = d.leds(&v, Instant::now());
+    assert_eq!((column(&l, 0), column(&l, 1)), (8, 0), "In 1");
+    hold(&mut d, &v, "SHIFT");
+    assert_eq!(apps(&press(&mut d, &v, "IN1")), [], "already open");
+    release(&mut d, &v, "SHIFT");
+    let l = d.leds(&v, Instant::now());
+    assert_eq!((column(&l, 0), column(&l, 1)), (0, 8), "In 2");
+    assert_eq!(apps(&press(&mut d, &v, "CUE")), [Action::WatchInput(false)], "let go");
+    let l = d.leds(&v, Instant::now());
+    assert_eq!((column(&l, 0), column(&l, 1)), (8, 8), "the cue");
+}
+
+#[test]
+fn the_encoder_sets_an_inputs_level() {
+    let mut d = jam();
+    let mut v = jam_view();
+    v.input_levels = [0.75, 0.75];
+    press(&mut d, &v, "IN1");
+    let out = d.encoder(2, &v, Instant::now());
+    assert!(matches!(apps(&out)[..], [Action::InputDb(0, db)] if (db - 1.0).abs() < 1e-3), "{:?}", apps(&out));
+    assert_eq!(messages(&out), ["In 1 1.0 dB"]);
+    hold(&mut d, &v, "SHIFT");
+    press(&mut d, &v, "IN1");
+    release(&mut d, &v, "SHIFT");
+    let out = d.encoder(-1, &v, Instant::now());
+    assert!(matches!(apps(&out)[..], [Action::InputDb(1, db)] if (db + 0.5).abs() < 1e-3), "{:?}", apps(&out));
+    assert_eq!(messages(&out), ["In 2 -0.5 dB"]);
 }
 
 #[test]
@@ -705,9 +746,6 @@ fn the_encoder_sets_what_the_meter_shows_and_says_so() {
     press(&mut d, &v, "CUE");
     v.cue_level = 0.75;
     assert!(matches!(apps(&d.encoder(1, &v, Instant::now()))[..], [Action::CueDb(_)]));
-    press(&mut d, &v, "IN1");
-    let out = d.encoder(1, &v, Instant::now());
-    assert_eq!(apps(&out), [], "an input's level isn't DECKARD's to set");
     press(&mut d, &v, "TEMPO");
     v.tempo = 120.0;
     assert_eq!(apps(&d.encoder(3, &v, Instant::now())), [Action::Tempo(123.0)]);
@@ -840,10 +878,18 @@ fn browse_opens_the_panel_and_loads() {
     hold(&mut d, &v, "SHIFT");
     assert_eq!(apps(&press(&mut d, &v, "ENCODER")), [Action::Browse(crate::Browse::SetFavorite)]);
     assert_eq!(apps(&d.encoder(1, &v, Instant::now())), [Action::Browse(crate::Browse::Focus(10))], "ten at a time");
-    assert_eq!(apps(&press(&mut d, &v, "DOWN")), [Action::Browse(crate::Browse::Focus(1)), Action::Browse(crate::Browse::Load)], "the next one, loaded");
+    assert_eq!(
+        apps(&press(&mut d, &v, "DOWN")),
+        [Action::Browse(crate::Browse::Focus(1)), Action::Browse(crate::Browse::Load)],
+        "the next one, loaded"
+    );
     release(&mut d, &v, "SHIFT");
     press(&mut d, &v, "UP");
-    assert_eq!(apps(&press(&mut d, &v, "ENCODER")), [Action::Browse(crate::Browse::Favorites)], "up from the results: the favourites switch");
+    assert_eq!(
+        apps(&press(&mut d, &v, "ENCODER")),
+        [Action::Browse(crate::Browse::Favorites)],
+        "up from the results: the favourites switch"
+    );
     assert_eq!(apps(&press(&mut d, &v, "BROWSE")), [Action::Library(false)]);
     assert_eq!(apps(&d.encoder(1, &v, Instant::now())).len(), 1, "the master's again");
 }
@@ -898,7 +944,10 @@ fn every_mode_draws_on_an_empty_project_too() {
     let empty = View { groups: Vec::new(), scenes: Vec::new(), ..jam_view() };
     let full = jam_view();
     for v in [&empty, &full] {
-        for name in ["SONG", "PAD_MODE", "STEP", "STEP", "LOCK", "BROWSE", "BROWSE", "LEVEL", "AUX", "TUNE", "SWING", "CONTROL", "MACRO", "PERFORM", "NOTES", "NOTES", "GRID", "GRID", "SONG"] {
+        for name in [
+            "SONG", "PAD_MODE", "STEP", "STEP", "LOCK", "BROWSE", "BROWSE", "LEVEL", "AUX", "TUNE", "SWING", "CONTROL", "MACRO", "PERFORM",
+            "NOTES", "NOTES", "GRID", "GRID", "SONG",
+        ] {
             press(&mut d, v, name);
             let _ = d.leds(v, Instant::now());
             let _ = d.pad_map(v, Instant::now());

@@ -2830,11 +2830,21 @@ fn name_rect(row: Rect) -> Rect {
 pub const DROP_ROWS: &str = "deckard-drop-rows";
 
 fn row_input(ui: &mut Ui, app: &App, p: &Project, row: Rect, clip: Rect, target: Target, name: &str, focus: Act, acts: &mut Vec<Act>) {
-    // A sound row takes samples dragged onto it: lit while they're over it.
-    if let Target::Sound(g, s) = target {
+    // A sound row takes a sample dropped on that pad. A group row takes one into the
+    // focused pad of that group (the first pad, when another group is focused).
+    let drop_at = match target {
+        Target::Sound(g, s) => Some((g, s)),
+        Target::Group(g) => Some((g, if app.group == g { app.sound } else { 0 })),
+        _ => None,
+    };
+    if let Some((g, s)) = drop_at {
         let r = row.intersect(clip);
         ui.ctx().data_mut(|d| d.get_temp_mut_or_default::<Vec<(Rect, (usize, usize))>>(egui::Id::new(DROP_ROWS)).push((r, (g, s))));
-        if app.file_drag.is_some_and(|at| r.contains(at)) {
+        let over = app.file_drag.is_some_and(|at| r.contains(at))
+            || ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
+                && (egui::DragAndDrop::payload::<crate::layout::browser::Dragged>(ui.ctx()).is_some()
+                    || egui::DragAndDrop::payload::<crate::layout::browser::DraggedFile>(ui.ctx()).is_some());
+        if over {
             ui.painter().rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0, Color32::WHITE), StrokeKind::Inside);
         }
     }
@@ -4070,7 +4080,9 @@ fn chain_area(ui: &mut Ui, app: &App, doc: &deckard_doc::Document, rect: Rect, a
                     mod_routes::set_bases(ui, bases);
                     let smp = &*live;
                     let page = app.sampler_page.min(sampler_ui::PAGES.len() - 1);
-                    heading = format!("Sampler: {}", sampler_ui::PAGES[page]);
+                    // The open page is already a tab. Putting it in the title too
+                    // ("Sampler: Pitch / Envelope") shifts the whole tab bar on every click.
+                    heading = "Sampler".into();
                     let pg = sampler_ui::page(smp, app.group, app.sound, page);
                     params = pg.slots.into_iter().collect();
                     sections = pg.sections.into_iter().map(|(i, n)| (i, n.into())).collect();
@@ -4103,11 +4115,9 @@ fn chain_area(ui: &mut Ui, app: &App, doc: &deckard_doc::Document, rect: Rect, a
                         Some(v) if v.error.is_none() => {
                             let pages = v.pages.len().max(1);
                             let page = app.plugin_page.min(pages - 1);
-                            let pname = v.pages.get(page).map(|p| p.name.clone()).filter(|n| !n.is_empty());
-                            heading = match pname {
-                                Some(n) => format!("{}: {n}", pr.name),
-                                None => format!("{}: Page {} of {}", pr.name, page + 1, pages),
-                            };
+                            // The page names are the tabs beside this. The title stays the
+                            // plug-in, so the bar doesn't jump when the page changes.
+                            heading = pr.name.clone();
                             // Named pages (DECKARD's plug-ins name theirs) by name, else by number.
                             let names: Vec<String> = if !v.pages.is_empty() && v.pages.iter().all(|p| !p.name.is_empty()) {
                                 v.pages.iter().map(|p| p.name.clone()).collect()
@@ -4164,7 +4174,9 @@ fn chain_area(ui: &mut Ui, app: &App, doc: &deckard_doc::Document, rect: Rect, a
                     // its knobs now.
                     let names = crate::module_ui::pages(&slot.module).unwrap_or(&[]);
                     let page = app.plugin_page.min(names.len().saturating_sub(1));
-                    heading = format!("{}: {}", slot.name, names[page]);
+                    // Several pages become tabs, so the title is only the module.
+                    // One page has no tab, and its name stays in the title.
+                    heading = if names.len() > 1 { slot.name.clone() } else { format!("{}: {}", slot.name, names[page]) };
                     let t = app.module_target(i);
                     let (live, bases) = app.live_slot_bases((app.group, app.sound, i), s, slot, t);
                     mod_routes::set_bases(ui, bases);
