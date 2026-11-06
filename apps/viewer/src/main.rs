@@ -433,21 +433,6 @@ impl ViewPage {
     }
 }
 
-/// A saved page's name: its explicit `name`, or its knobs' section headings.
-fn saved_page_name(pg: &deckard_model::PluginPage) -> String {
-    if !pg.name.is_empty() {
-        return pg.name.clone();
-    }
-    let mut sections: Vec<&str> = Vec::new();
-    for k in &pg.params {
-        let s = k.section.trim();
-        if !s.is_empty() && !sections.contains(&s) {
-            sections.push(s);
-        }
-    }
-    sections.join(" / ")
-}
-
 /// The plug-in's own pages (DECKARD's: they follow the plug-in, even once saved for a
 /// macro), the pages saved with it, or Maschine's automatic ones: its first 128
 /// automatable parameters, eight per page.
@@ -478,16 +463,12 @@ fn view_pages(p: &deckard_plugins::Plugin, saved: &[deckard_model::PluginPage]) 
                     .params
                     .iter()
                     .filter_map(|k| {
-                        let info = all
-                            .iter()
-                            .find(|i| i.id == k.id)
-                            .or_else(|| (k.id != u32::MAX).then(|| all.get(k.id as usize)).flatten())?
-                            .clone();
+                        let info = all.iter().find(|i| i.id == k.id)?.clone();
                         let label = if k.name.is_empty() { info.title.clone() } else { k.name.clone() };
                         Some((info, label, k.section.clone()))
                     })
                     .collect();
-                ViewPage::new(p, saved_page_name(pg), knobs)
+                ViewPage::new(p, pg.name.clone(), knobs)
             })
             .filter(|pg| !pg.knobs.is_empty())
             .collect();
@@ -7931,43 +7912,24 @@ impl App {
         let plugin =
             deckard_plugins::nks::parse(bytes).and_then(|p| p.resolve(&self.catalog.entries)).map_err(|e| format!("{name}: {e}"))?;
         let Some(doc) = self.doc.clone() else { return Err("no project".into()) };
-        let pages: Vec<deckard_doc::PluginPageSpec> = plugin
-            .pages
-            .iter()
-            .map(|pg| deckard_doc::PluginPageSpec {
-                name: String::new(),
-                knobs: pg.iter().map(|k| (k.id.unwrap_or(u32::MAX), k.section.clone())).collect(),
-                custom_names: pg.iter().map(|k| k.name.clone()).collect(),
-            })
-            .collect();
         let module = deckard_doc::NewModule::Plugin { id: plugin.id, name: plugin.name, chunk: plugin.chunk };
         let mut d = doc.borrow_mut();
         let (count, first_is_instrument) = {
             let slots = &d.project().groups[g].sounds[s].slots;
             (slots.len(), slots.first().map(|x| x.is_instrument()))
         };
-        if module.is_instrument() && first_is_instrument == Some(false) {
-            return Err("the sound's chain starts with an effect: an instrument can't go before it".into());
+        if module.is_instrument() {
+            match first_is_instrument {
+                Some(false) => return Err("the sound's chain starts with an effect: an instrument can't go before it".into()),
+                Some(true) => d.remove_slot(g, s, 0)?,
+                None => {}
+            }
+            d.add_slot(g, s, 0, &module)?;
+        } else {
+            d.add_slot(g, s, count, &module)?;
         }
-        let slot = if module.is_instrument() { 0 } else { count };
-        d.transaction("Load Preset", |d| {
-            if module.is_instrument() && first_is_instrument == Some(true) {
-                d.remove_slot(g, s, 0)?;
-            }
-            d.add_slot(g, s, slot, &module)?;
-            if !pages.is_empty() {
-                d.save_plugin_pages(deckard_doc::Chain::Sound(g, s), slot, &pages)?;
-            }
-            Ok(())
-        })?;
         drop(d);
-        self.editors.retain(|&(c, i, _)| !(c == deckard_doc::Chain::Sound(g, s) && i == slot));
         self.sound = s;
-        self.chain_tab = layout::ChainTab::Sound;
-        self.slot_of = Some(deckard_doc::Chain::Sound(g, s));
-        self.slot = Some(slot);
-        self.plugin_page = 0;
-        self.plugin_view = None;
         self.status = format!("{name} loaded");
         Ok(())
     }
