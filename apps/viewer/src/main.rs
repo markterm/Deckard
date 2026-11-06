@@ -4320,7 +4320,7 @@ impl App {
         Some(if self.surface.holding() || self.surface.animates() {
             std::time::Duration::from_millis(30)
         } else {
-            controller::tick_every(self.playing.is_some())
+            controller::tick_every(self.playing.is_some() || self.recorder.busy() || self.recorder.is_metering())
         })
     }
 
@@ -6083,6 +6083,14 @@ impl App {
         };
         active |= travels != self.route_seen;
         self.route_seen = travels;
+        active |= self.recorder.busy()
+            || self.recorder.is_metering()
+            || self.recorder.view.meter.0 > 0.001
+            || self.recorder.view.meter.1 > 0.001
+            || self.input_watched
+            || self.input_meters.iter().any(|m| m.0 > 0.001 || m.1 > 0.001)
+            || self.cue_meter.0 > 0.001
+            || self.cue_meter.1 > 0.001;
         if lfo_live {
             ctx.request_repaint_after(if again.is_zero() { std::time::Duration::from_millis(30) } else { again });
         }
@@ -6266,7 +6274,8 @@ impl App {
         };
         // The input meter moves while a RECORD tab shows (the app's, or the controller's
         // Sampling page), before recording too.
-        let hw_record = matches!(&self.controller, Some(Ok(c)) if c.sampling() && c.host.state.borrow().sampling_tab == 0);
+        let hw_record = matches!(&self.controller, Some(Ok(c)) if c.sampling() && c.host.state.borrow().sampling_tab == 0)
+            || (self.mk3.is_some() && self.surface.page() == "sampling" && self.sampling.tab == 0);
         let listen = self.meter_inputs && ((self.sampling_open && self.sampling.tab == 0) || hw_record);
         self.recorder.meter(
             listen,
@@ -9323,6 +9332,7 @@ impl App {
         self.handle(requests);
         self.sync_selection();
         self.sync_audio_settings();
+        self.update_sampling();
         self.sync_sampling_page();
         self.sync_browse_page();
         self.sync_arp();
@@ -9450,8 +9460,8 @@ impl App {
         if self.stems.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
-        // The recorder takes up its audio every frame while armed or recording.
-        if self.recorder.busy() {
+        // The recorder takes up its audio every frame while armed, recording or metering.
+        if self.recorder.busy() || self.recorder.is_metering() {
             ctx.request_repaint();
         }
         self.update_slot_view();

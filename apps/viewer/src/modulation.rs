@@ -119,10 +119,7 @@ pub fn knob_travel(p: &Project, c: Chain, target: &ModTarget) -> Option<f64> {
     let slot = slots.get(target.slot?)?;
     let v = if slot.module == "Sampler" {
         let Chain::Sound(g, s) = c else { return None };
-        deckard_model::SAMPLER_PARAMS
-            .iter()
-            .any(|(k, _)| *k == target.field)
-            .then_some(())?;
+        deckard_model::SAMPLER_PARAMS.iter().any(|(k, _)| *k == target.field).then_some(())?;
         p.groups[g].sounds[s].sampler.as_ref()?.get(&target.field)
     } else {
         slot.param(&target.field)?

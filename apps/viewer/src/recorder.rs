@@ -21,6 +21,7 @@ use deckard_engine::sample::Sample;
 use deckard_engine::{Tap, TapSource};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -153,12 +154,17 @@ type MeterKey = (usize, usize, usize, Option<usize>, Option<String>, bool, bool)
 pub struct Recorder {
     pub view: RecorderView,
     incoming: Arc<Mutex<Vec<[f32; 2]>>>,
+    /// Peak (L, R) since the last [`Recorder::poll`] from the external input callback.
+    peaks: Arc<[AtomicU32; 2]>,
+    /// Whether the external input callback should buffer frames into `incoming`.
+    recording: Arc<AtomicBool>,
     stream: Option<cpal::Stream>,
     tap: Option<Arc<Mutex<Vec<f32>>>>,
     run: Option<Run>,
     midi: Option<midir::MidiOutputConnection>,
     /// The source the input meter listens to while nothing is recorded.
     meter_key: Option<MeterKey>,
+    polled_at: Option<Instant>,
 }
 
 enum Done {
@@ -186,6 +192,11 @@ impl Recorder {
     /// Armed or recording: the parameters can't change.
     pub fn busy(&self) -> bool {
         self.run.is_some()
+    }
+
+    /// Whether the recorder has an open input stream or tap for metering.
+    pub fn is_metering(&self) -> bool {
+        self.stream.is_some() || self.tap.is_some()
     }
 
     /// Whether START can be pressed: Auto needs something to play.
@@ -237,6 +248,7 @@ impl Recorder {
             self.close_with(with.output);
         }
         self.view.error = None;
+        self.recording.store(true, Ordering::Relaxed);
         let internal = self.view.source == 2;
         let rate = match (internal, with.output) {
             (true, Some(out)) => out.rate,
@@ -353,6 +365,10 @@ impl Recorder {
         }
         let incoming = self.incoming.clone();
         *incoming.lock().unwrap() = Vec::with_capacity(INCOMING_ROOM);
+        let peaks = self.peaks.clone();
+        peaks[0].store(0, Ordering::Relaxed);
+        peaks[1].store(0, Ordering::Relaxed);
+        let recording = self.recording.clone();
         let monitor = self.view.monitor.then(|| with.output.map(Output::monitor)).flatten();
         let rate = config.sample_rate();
         let stream = deckard_engine::devices::build_input(
@@ -360,7 +376,24 @@ impl Recorder {
             config,
             move |data: &[f32]| {
                 let at = |f: &[f32], input: usize, c: Option<usize>| c.map_or(0.0, |c| f[c] * inputs.gain(input));
-                if let Ok(mut inc) = incoming.try_lock() {
+                let mut peak = (0f32, 0f32);
+                for f in data.chunks(channels) {
+                    let (fl, fr) = (at(f, in_l, l), at(f, in_r, r));
+                    peak = (peak.0.max(fl.abs()), peak.1.max(fr.abs()));
+                }
+                for (slot, p) in peaks.iter().zip([peak.0, peak.1]) {
+                    let bits = p.to_bits();
+                    let mut cur = slot.load(Ordering::Relaxed);
+                    while f32::from_bits(cur) < p {
+                        match slot.compare_exchange_weak(cur, bits, Ordering::Relaxed, Ordering::Relaxed) {
+                            Ok(_) => break,
+                            Err(actual) => cur = actual,
+                        }
+                    }
+                }
+                if recording.load(Ordering::Relaxed)
+                    && let Ok(mut inc) = incoming.try_lock()
+                {
                     inc.extend(data.chunks(channels).map(|f| [at(f, in_l, l), at(f, in_r, r)]));
                 }
                 if let Some(m) = &monitor
@@ -439,6 +472,7 @@ impl Recorder {
         {
             o.set_tap(None);
         }
+        self.recording.store(false, Ordering::Relaxed);
         self.stream = None;
         self.run = None;
         self.midi = None;
@@ -448,24 +482,40 @@ impl Recorder {
 
     /// Take up what arrived (call every frame). Returns a finished recording.
     pub fn poll(&mut self, output: Option<&Output>, clock: Clock) -> Option<Finished> {
-        let new: Vec<[f32; 2]> = if let Some(tap) = &self.tap {
-            let raw = std::mem::take(&mut *tap.lock().unwrap());
-            raw.as_chunks::<2>().0.to_vec()
+        let now = Instant::now();
+        let dt = self.polled_at.map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+        self.polled_at = Some(now);
+        let fall = 0.5f32.powf(dt / 0.15);
+        let (new, peak): (Vec<[f32; 2]>, (f32, f32)) = if let Some(tap) = &self.tap {
+            let mut guard = tap.lock().unwrap();
+            let frames = guard.as_chunks::<2>().0;
+            let peak = frames.iter().fold((0f32, 0f32), |p, f| (p.0.max(f[0].abs()), p.1.max(f[1].abs())));
+            let new = if self.run.is_some() { frames.to_vec() } else { Vec::new() };
+            guard.clear();
+            (new, peak)
         } else if self.stream.is_some() {
-            // The next lot's room is made here. On ASIO the input's callback runs on the
-            // output's thread, which shouldn't have to allocate.
-            let room = Vec::with_capacity(INCOMING_ROOM);
-            std::mem::replace(&mut *self.incoming.lock().unwrap(), room)
+            let p0 = f32::from_bits(self.peaks[0].swap(0, Ordering::Relaxed));
+            let p1 = f32::from_bits(self.peaks[1].swap(0, Ordering::Relaxed));
+            let new = if self.run.is_some() {
+                // The next lot's room is made here. On ASIO the input's callback runs on the
+                // output's thread, which shouldn't have to allocate.
+                let mut inc = self.incoming.lock().unwrap();
+                if inc.is_empty() { Vec::new() } else { std::mem::replace(&mut *inc, Vec::with_capacity(INCOMING_ROOM)) }
+            } else {
+                Vec::new()
+            };
+            let peak = new.iter().fold((p0, p1), |p, f| (p.0.max(f[0].abs()), p.1.max(f[1].abs())));
+            (new, peak)
         } else {
-            self.view.meter = (self.view.meter.0 * 0.8, self.view.meter.1 * 0.8);
+            self.view.meter = (self.view.meter.0 * fall, self.view.meter.1 * fall);
             return None;
         };
-        let peak = new.iter().fold((0f32, 0f32), |p, f| (p.0.max(f[0].abs()), p.1.max(f[1].abs())));
-        self.view.meter = ((self.view.meter.0 * 0.8).max(peak.0), (self.view.meter.1 * 0.8).max(peak.1));
+        self.view.meter = ((self.view.meter.0 * fall).max(peak.0), (self.view.meter.1 * fall).max(peak.1));
         if self.run.is_none() {
             // Only metering.
             return None;
         }
+        let got_frames = !new.is_empty();
         let done = match self.view.mode {
             3 => self.poll_auto(output, new),
             0 => self.poll_detect(new),
@@ -473,12 +523,13 @@ impl Recorder {
         };
         if let Some(run) = &self.run {
             self.view.recorded_frames = if run.auto.is_some() { run.pending.len() } else { run.frames.len() };
-            let shown: Vec<[f32; 2]> = match self.view.status {
-                RecStatus::Waiting => run.ring.iter().copied().collect(),
-                _ if run.auto.is_some() => run.pending.clone(),
-                _ => run.frames[run.frames.len().saturating_sub(run.rate as usize * 5)..].to_vec(),
-            };
-            self.view.preview = preview(&shown);
+            if got_frames || self.view.preview.is_empty() {
+                self.view.preview = match self.view.status {
+                    RecStatus::Waiting => preview_iter(run.ring.iter().copied(), run.ring.len()),
+                    _ if run.auto.is_some() => preview(&run.pending),
+                    _ => preview(&run.frames[run.frames.len().saturating_sub(run.rate as usize * 5)..]),
+                };
+            }
         }
         self.view.info = self.info(&clock);
         match done {
@@ -554,12 +605,12 @@ impl Recorder {
                 run.arm_line = Some((before / grid - 1e-6).ceil().max(0.0) * grid);
             }
             let line = run.arm_line.unwrap_or(0.0);
-            let mut all: Vec<[f32; 2]> = run.ring.drain(..).collect();
-            all.extend(new);
             if abs < line {
-                keep_recent(&mut run.ring, all, run.rate as usize * 2);
+                keep_recent(&mut run.ring, new, run.rate as usize * 2);
                 return None;
             }
+            let mut all: Vec<[f32; 2]> = run.ring.drain(..).collect();
+            all.extend(new);
             let over = (clock.frames(abs - line, run.rate).round() as usize).min(all.len());
             run.frames = all[all.len() - over..].to_vec();
             run.started = line;
@@ -704,16 +755,29 @@ fn keep_recent(ring: &mut VecDeque<[f32; 2]>, new: Vec<[f32; 2]>, n: usize) {
 
 /// (min, max) of the mid signal in up to 400 columns.
 fn preview(frames: &[[f32; 2]]) -> Vec<(f32, f32)> {
-    let per = (frames.len() / 400).max(1);
-    frames
-        .chunks(per)
-        .map(|c| {
-            c.iter().fold((0f32, 0f32), |(lo, hi), f| {
-                let m = (f[0] + f[1]) * 0.5;
-                (lo.min(m), hi.max(m))
-            })
-        })
-        .collect()
+    preview_iter(frames.iter().copied(), frames.len())
+}
+
+fn preview_iter(mut frames: impl Iterator<Item = [f32; 2]>, len: usize) -> Vec<(f32, f32)> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let per = (len / 400).max(1);
+    let mut out = Vec::with_capacity(len.div_ceil(per));
+    loop {
+        let mut count = 0;
+        let mut acc = (0f32, 0f32);
+        for f in frames.by_ref().take(per) {
+            let m = (f[0] + f[1]) * 0.5;
+            acc = (acc.0.min(m), acc.1.max(m));
+            count += 1;
+        }
+        if count == 0 {
+            break;
+        }
+        out.push(acc);
+    }
+    out
 }
 
 fn connect_midi(name: &str) -> Result<midir::MidiOutputConnection, String> {

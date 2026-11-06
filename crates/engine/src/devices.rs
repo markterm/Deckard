@@ -376,9 +376,15 @@ where
     use cpal::SampleFormat::{F32, I16, I24, I32};
     let (format, channels) = (config.sample_format(), config.channels() as usize);
     let asio = driver() == AudioDriver::Asio;
+    let range = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
+        _ => None,
+    };
     let mut stream_config: cpal::StreamConfig = config.into();
     if asio {
         stream_config.buffer_size = asio_buffer();
+    } else if let Some((min, max)) = range {
+        stream_config.buffer_size = cpal::BufferSize::Fixed(256.clamp(min, max));
     }
     let on_error = move |e: cpal::Error| {
         // An ASIO overload arrives on the driver's thread: nothing there that can wait.
