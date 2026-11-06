@@ -7742,9 +7742,17 @@ impl App {
         };
         let Some(item) = browser::item_of(&file) else { return };
         let r = match what {
-            FileItem::Slot(g, s, k) => std::fs::read(&file)
-                .map_err(|e| e.to_string())
-                .and_then(|b| self.doc.clone().ok_or("no project".to_string())?.borrow_mut().load_slot_file(g, s, k, &b)),
+            FileItem::Slot(g, s, k) => std::fs::read(&file).map_err(|e| e.to_string()).and_then(|b| {
+                let doc = self.doc.clone().ok_or("no project".to_string())?;
+                let mut d = doc.borrow_mut();
+                d.transaction("Load Preset", |d| {
+                    d.load_slot_file(g, s, k, &b)?;
+                    if k == 0 && d.project().groups[g].sounds[s].slots.first().is_some_and(|x| x.is_instrument()) {
+                        d.rename(deckard_doc::Target::Sound(g, s), preset_sound_name(&item.name))?;
+                    }
+                    Ok(())
+                })
+            }),
             _ => self.load_item(&item, target),
         };
         if let Err(e) = r {
@@ -7974,7 +7982,11 @@ impl App {
                         if slots.first().is_some_and(|x| !x.is_instrument()) {
                             return Err("the sound's chain starts with an effect: an instrument can't go before it".into());
                         }
-                        d.load_slot_file(g, s, 0, &bytes)?;
+                        d.transaction("Load Preset", |d| {
+                            d.load_slot_file(g, s, 0, &bytes)?;
+                            d.rename(deckard_doc::Target::Sound(g, s), preset_sound_name(&item.name))?;
+                            Ok(())
+                        })?;
                         Some(0)
                     }
                     _ => {
@@ -8079,6 +8091,9 @@ impl App {
             if !pages.is_empty() {
                 d.save_plugin_pages(deckard_doc::Chain::Sound(g, s), slot, &pages)?;
             }
+            if module.is_instrument() {
+                d.rename(deckard_doc::Target::Sound(g, s), preset_sound_name(name))?;
+            }
             Ok(())
         })?;
         drop(d);
@@ -8095,13 +8110,18 @@ impl App {
     }
 
     /// Look up a default NKS preset for `plugin_name` in NI's library index, preferring
-    /// one whose `NICA` pages carry section headings.
+    /// one whose `NICA` / `DSINy` pages carry section headings.
     fn default_nks_preset(&self, plugin_name: &str) -> Option<deckard_plugins::nks::Resolved> {
         let mut best: Option<deckard_plugins::nks::Resolved> = None;
         for path in deckard_library::ni::nks_presets_for(plugin_name) {
             let Ok(bytes) = std::fs::read(&path) else { continue };
-            let Ok(preset) = deckard_plugins::nks::parse(&bytes) else { continue };
-            let Ok(resolved) = preset.resolve(&self.catalog.entries) else { continue };
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let resolved = if matches!(ext.to_ascii_lowercase().as_str(), "nksf" | "nksfx") {
+                deckard_plugins::nks::parse(&bytes).and_then(|p| p.resolve(&self.catalog.entries)).ok()
+            } else {
+                deckard_plugins::nks::native_preset(ext, &bytes, &self.catalog.entries).and_then(Result::ok)
+            };
+            let Some(resolved) = resolved else { continue };
             let has_sections = resolved.pages.iter().any(|pg| pg.iter().any(|k| !k.section.is_empty()));
             if has_sections {
                 return Some(resolved);
@@ -8907,7 +8927,24 @@ impl App {
             self.status = "a sound has one instrument, in its first slot".into();
             return;
         }
-        match doc.borrow_mut().add_slot_in(c, at, &module) {
+        let label = match &module {
+            deckard_doc::NewModule::Plugin { name, .. } if !name.is_empty() => "Load Plug-in",
+            deckard_doc::NewModule::Effect(_) => "Load Effect",
+            _ => "Load Module",
+        };
+        let added = doc.borrow_mut().transaction(label, |d| {
+            d.add_slot_in(c, at, &module)?;
+            if let deckard_doc::Chain::Sound(g, s) = c
+                && at == 0
+                && instrument
+                && matches!(what, layout::AddWhat::Instrument(_) | layout::AddWhat::Plugin(_))
+            {
+                let name = d.project().groups[g].sounds[s].slots[0].name.clone();
+                d.rename(deckard_doc::Target::Sound(g, s), &name)?;
+            }
+            Ok(())
+        });
+        match added {
             Ok(()) => {
                 self.slot = Some(at);
                 self.slot_of = Some(c);
@@ -9728,6 +9765,17 @@ impl App {
         }
         self.flush_clipboard(ctx);
     }
+}
+
+fn preset_sound_name(name: &str) -> &str {
+    for ext in [".nksf", ".nksfx", ".nfm8", ".nmsv", ".nrkt", ".rkplr", ".ens", ".mxinst"] {
+        if let Some(stem) = name.strip_suffix(ext)
+            && !stem.is_empty()
+        {
+            return stem;
+        }
+    }
+    name
 }
 
 #[cfg(test)]
