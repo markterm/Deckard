@@ -699,6 +699,8 @@ pub enum Act {
     MoveSlot(usize, usize),
     /// Move slot `.1` of chain `.0` to position `.2`.
     MoveSlotIn(deckard_doc::Chain, usize, usize),
+    /// Move slot `.1` of chain `.0` to position `.3` of chain `.2`.
+    MoveSlotBetween(deckard_doc::Chain, usize, deckard_doc::Chain, usize),
     SlotActive(usize, bool),
     OpenSlotEditor(usize),
     /// Open the window of the plug-in in slot `.1` of chain `.0`.
@@ -1221,6 +1223,7 @@ fn apply(app: &mut App, acts: Vec<Act>) {
             Act::AddSlot(what) => app.add_slot(what),
             Act::MoveSlot(from, to) => app.move_slot(from, to),
             Act::MoveSlotIn(c, from, to) => app.move_slot_in(c, from, to),
+            Act::MoveSlotBetween(from, from_at, to, to_at) => app.move_slot_between(from, from_at, to, to_at),
             Act::RemoveSlot(i) => apply(app, vec![Act::RemoveSlotIn(app.chain(), i)]),
             Act::RemoveSlotIn(c, i) => {
                 let key = app.plugin_slot_key(c, i);
